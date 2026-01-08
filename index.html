@@ -12,10 +12,10 @@
                 isRecording: false,
                 manualStop: false, 
                 
-                // --- ZMIENNE DO TRANSKRYPCJI (NAPRAWIONE) ---
-                currentTranscript: '',      // To co widzi użytkownik (suma wszystkiego)
-                historyTranscript: '',      // Tekst z poprzednich cykli (przed auto-restartem)
-                sessionFinalTranscript: '', // Tekst z obecnego cyklu (zatwierdzony)
+                // --- ZMIENNE DO TRANSKRYPCJI (Fixed) ---
+                currentTranscript: '',      
+                historyTranscript: '',      
+                sessionFinalTranscript: '', 
                 
                 recognition: null,
                 isLoading: true,
@@ -26,7 +26,7 @@
                 editingText: '',
 
                 async init() {
-                    console.log('Inicjalizacja Voice Brain (Fix v2)...');
+                    console.log('Inicjalizacja Voice Brain (Fix v3)...');
                     await this.loadNotes();
                     this.setupSpeechRecognition();
                 },
@@ -157,12 +157,10 @@
                         console.log('Nagrywanie rozpoczęte');
                     };
 
-                    // --- KLUCZOWA POPRAWKA LOGIKI ODBIERANIA ---
                     this.recognition.onresult = (event) => {
                         let interim = '';
                         let finalForThisSession = '';
 
-                        // Zamiast ufać resultIndex, iterujemy po wszystkim co dała przeglądarka w tej sesji
                         for (let i = 0; i < event.results.length; ++i) {
                             if (event.results[i].isFinal) {
                                 finalForThisSession += event.results[i][0].transcript;
@@ -171,13 +169,11 @@
                             }
                         }
 
-                        // Aktualizujemy zmienne stanu
                         this.sessionFinalTranscript = finalForThisSession;
                         
-                        // Sklejamy: Historia (poprzednie restarty) + Obecna Sesja (Final) + To co miga (Interim)
                         this.currentTranscript = 
                             (this.historyTranscript + ' ' + this.sessionFinalTranscript + ' ' + interim)
-                            .replace(/\s+/g, ' ') // Usuń podwójne spacje
+                            .replace(/\s+/g, ' ')
                             .trim();
                     };
 
@@ -186,7 +182,7 @@
                         if (event.error === 'no-speech') return; 
                         
                         if (event.error === 'network') {
-                            // Ignoruj błędy sieci przy auto-restarcie
+                            // Ignoruj network error przy restarcie
                         } else {
                              this.isRecording = false;
                              this.manualStop = true;
@@ -194,17 +190,14 @@
                     };
 
                     this.recognition.onend = () => {
-                        console.log('Nagrywanie zakończone (event)');
+                        console.log('Nagrywanie zakończone');
                         
-                        // Zapisz to co udało się zebrać w tej sesji do historii
                         if (this.sessionFinalTranscript) {
                             this.historyTranscript += ' ' + this.sessionFinalTranscript;
-                            this.sessionFinalTranscript = ''; // Reset sesji
+                            this.sessionFinalTranscript = ''; 
                         }
 
-                        // LOGIKA AUTO-RESTARTU
                         if (!this.manualStop && this.isRecording) {
-                            console.log('Auto-restart nagrywania...');
                             try {
                                 this.recognition.start();
                             } catch (e) {
@@ -213,16 +206,13 @@
                                 }, 200);
                             }
                         } else {
-                            // Prawdziwy koniec (użytkownik kliknął STOP)
                             this.isRecording = false;
                             
-                            // Zapisz finalną notatkę
                             const finalNote = this.historyTranscript.trim();
                             if (finalNote) {
                                 this.saveNote(finalNote);
                             }
                             
-                            // Reset wszystkiego
                             this.currentTranscript = '';
                             this.historyTranscript = '';
                             this.sessionFinalTranscript = '';
@@ -234,23 +224,27 @@
                     if (!this.recognition) return;
 
                     if (this.isRecording) {
-                        // STOP
                         this.manualStop = true; 
                         this.recognition.stop();
-                        // onend zajmie się zapisem
                     } else {
-                        // START
                         this.manualStop = false;
-                        this.historyTranscript = '';       // Nowa czysta notatka
+                        this.historyTranscript = '';
                         this.sessionFinalTranscript = '';
                         this.currentTranscript = '';
-                        
                         try {
                             this.recognition.start();
                         } catch (e) {
                             console.error('Start error:', e);
                         }
                     }
+                },
+
+                // --- BRAKUJĄCA FUNKCJA (PRZYWRÓCONA) ---
+                formatTime(dateObj) {
+                    if (!dateObj) return '';
+                    return new Date(dateObj).toLocaleTimeString('pl-PL', { 
+                        hour: '2-digit', minute: '2-digit' 
+                    });
                 }
             }));
         });
