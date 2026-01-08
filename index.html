@@ -404,14 +404,17 @@
                         // Przebuduj tekst sesji od zera (stateless) aby uniknąć duplikatów
                         for (let i = 0; i < event.results.length; ++i) {
                             if (event.results[i].isFinal) {
-                                finalForThisSession += event.results[i][0].transcript;
+                                finalForThisSession += event.results[i][0].transcript + ' ';
                             } else {
                                 interim += event.results[i][0].transcript;
                             }
                         }
                         
                         this.currentSessionFinal = finalForThisSession;
-                        this.currentTranscript = this.sessionTranscriptBuffer + finalForThisSession + interim;
+                        
+                        // Łączenie z normalizacją spacji (usuwa podwójne spacje i "sklejenia")
+                        let rawFullText = (this.sessionTranscriptBuffer + ' ' + finalForThisSession + ' ' + interim);
+                        this.currentTranscript = rawFullText.replace(/\s+/g, ' ').trim();
                     };
 
                     this.recognition.onerror = (event) => {
