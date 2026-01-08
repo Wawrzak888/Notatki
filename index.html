@@ -383,25 +383,33 @@
 
                 // --- Web Speech API (Auto-Restart Loop) ---
                 setupSpeechRecognition() {
-                    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-                    if (!SpeechRecognition) return;
+                    // Sprawdź dostępność API
+                    this.SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                    if (!this.SpeechRecognition) {
+                        this.errorMsg = 'Twoja przeglądarka nie obsługuje rozpoznawania mowy.';
+                    }
+                },
 
-                    this.recognition = new SpeechRecognition();
+                startRecordingLoop() {
+                    if (!this.SpeechRecognition) return;
+
+                    // ZAWSZE twórz nową instancję przy starcie/restarcie, aby uniknąć duplikacji (Android bug)
+                    // oraz problemów z "pamięcią" instancji.
+                    this.recognition = new this.SpeechRecognition();
                     this.recognition.continuous = true;
                     this.recognition.interimResults = true;
                     this.recognition.lang = 'pl-PL';
 
                     this.recognition.onstart = () => {
                         this.isRecording = true;
-                        this.currentSessionFinal = ''; // Reset zmiennej sesyjnej
-                        console.log('Nagrywanie rozpoczęte (loop)');
+                        this.currentSessionFinal = ''; 
+                        console.log('Nagrywanie rozpoczęte (nowa instancja)');
                     };
 
                     this.recognition.onresult = (event) => {
                         let interim = '';
                         let finalForThisSession = '';
 
-                        // Przebuduj tekst sesji od zera (stateless) aby uniknąć duplikatów
                         for (let i = 0; i < event.results.length; ++i) {
                             if (event.results[i].isFinal) {
                                 finalForThisSession += event.results[i][0].transcript + ' ';
@@ -412,52 +420,46 @@
                         
                         this.currentSessionFinal = finalForThisSession;
                         
-                        // Łączenie z normalizacją spacji (usuwa podwójne spacje i "sklejenia")
+                        // Łączenie
                         let rawFullText = (this.sessionTranscriptBuffer + ' ' + finalForThisSession + ' ' + interim);
-                        this.currentTranscript = rawFullText.replace(/\s+/g, ' ').trim();
+                        
+                        // Zaawansowana normalizacja i deduplikacja powtórzeń (dla "test test test")
+                        this.currentTranscript = this.cleanText(rawFullText);
                     };
 
                     this.recognition.onerror = (event) => {
                         console.error('Błąd Speech API:', event.error);
                         if (event.error === 'no-speech') return; 
                         
-                        // Nie zatrzymuj UI jeśli to błąd sieciowy/cisza, spróbuj zrestartować
                         if (event.error === 'network') {
-                            // opcjonalnie: restart
+                            // ignoruj, onend obsłuży restart
                         } else {
-                             // Poważniejszy błąd - zatrzymaj
                              this.isRecording = false;
-                             this.manualStop = true; // Zablokuj restart
+                             this.manualStop = true;
                         }
                     };
 
                     this.recognition.onend = () => {
                         console.log('Nagrywanie zakończone (event)');
                         
-                        // Zatwierdź wynik tej sesji do głównego bufora
+                        // Zatwierdź wynik tej sesji
                         this.sessionTranscriptBuffer += this.currentSessionFinal;
+                        // Oczyść buffer z ewentualnych duplikatów po zatwierdzeniu
+                        this.sessionTranscriptBuffer = this.cleanText(this.sessionTranscriptBuffer) + ' ';
+                        
                         this.currentSessionFinal = '';
 
                         // LOGIKA AUTO-RESTARTU
                         if (!this.manualStop && this.isRecording) {
                             console.log('Auto-restart nagrywania...');
-                            try {
-                                this.recognition.start();
-                            } catch (e) {
-                                console.log('Zbyt szybki restart, czekam...');
-                                setTimeout(() => {
-                                    if(!this.manualStop) this.recognition.start();
-                                }, 200);
-                            }
+                            // Krótkie opóźnienie dla stabilności
+                            setTimeout(() => {
+                                if(!this.manualStop) this.startRecordingLoop();
+                            }, 100);
                         } else {
-                            // To był prawdziwy koniec
                             this.isRecording = false;
                             
-                            // Zapisz jeśli mamy jakąś treść (buffer + current)
-                            // Uwaga: currentTranscript może zawierać interim, którego nie chcemy zapisać, 
-                            // ale onend zwykle czyści interim. Zapiszmy to co mamy w buforze.
                             const finalToSave = this.sessionTranscriptBuffer.trim();
-                            
                             if (finalToSave) {
                                 this.saveNote(finalToSave);
                             }
@@ -466,27 +468,45 @@
                             this.sessionTranscriptBuffer = '';
                         }
                     };
+
+                    try {
+                        this.recognition.start();
+                    } catch (e) {
+                        console.error('Start error:', e);
+                    }
+                },
+
+                cleanText(text) {
+                    if (!text) return '';
+                    // 1. Usuń wielokrotne spacje
+                    let clean = text.replace(/\s+/g, ' ').trim();
+                    // 2. Usuń proste powtórzenia słów (np. "test test" -> "test")
+                    // Regex łapie powtórzone słowo (co najmniej 3 litery) oddzielone spacją
+                    // Używamy pętli, aby usunąć wielokrotne powtórzenia (test test test -> test)
+                    let prev;
+                    do {
+                        prev = clean;
+                        clean = clean.replace(/(\b\w{3,}\b)( \1\b)+/gi, '$1');
+                    } while (clean !== prev);
+                    
+                    return clean;
                 },
 
                 toggleRecording() {
-                    if (!this.recognition) return;
+                    if (!this.SpeechRecognition) return;
 
                     if (this.isRecording) {
-                        // Użytkownik chce zatrzymać
+                        // STOP
                         this.manualStop = true; 
-                        this.recognition.stop();
-                        this.isRecording = false; // UI update natychmiast
+                        if (this.recognition) this.recognition.stop();
+                        this.isRecording = false;
                     } else {
-                        // Użytkownik chce wystartować
+                        // START
                         this.manualStop = false;
-                        this.sessionTranscriptBuffer = ''; // Reset bufora nowej sesji
+                        this.sessionTranscriptBuffer = ''; 
                         this.currentSessionFinal = '';
                         this.currentTranscript = '';
-                        try {
-                            this.recognition.start();
-                        } catch (e) {
-                            console.error('Start error:', e);
-                        }
+                        this.startRecordingLoop();
                     }
                 },
 
