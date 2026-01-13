@@ -279,6 +279,10 @@
 
                 editingNoteId: null,
                 editingText: '',
+                
+                // Zmienne do deduplikacji
+                lastSavedText: '',
+                lastSavedTime: 0,
 
                 async init() {
                     await db.open();
@@ -492,15 +496,36 @@
                         this.recognition.continuous = true;
                         this.recognition.interimResults = true;
                         this.recognition.lang = 'pl-PL';
-                        this.recognition.onstart = () => { this.isRecording = true; playTone(440, 'sine', 0.1); };
+                        
+                        this.recognition.onstart = () => { 
+                            this.isRecording = true; 
+                            playTone(440, 'sine', 0.1); 
+                        };
+                        
                         this.recognition.onresult = (e) => {
-                            const last = e.results[e.results.length - 1];
-                            this.currentTranscript = last[0].transcript;
-                            if (last.isFinal) {
-                                if (this.parseReminderFromText(last[0].transcript).hasReminder) this.detectedReminder = true;
-                                this.saveNote(last[0].transcript);
+                            // Iterujemy przez wyniki, które uległy zmianie (e.resultIndex)
+                            for (let i = e.resultIndex; i < e.results.length; ++i) {
+                                const result = e.results[i];
+                                this.currentTranscript = result[0].transcript;
+                                
+                                if (result.isFinal) {
+                                    const text = result[0].transcript.trim();
+                                    
+                                    // Zabezpieczenie przed duplikatami (Ten sam tekst w ciągu 3 sek)
+                                    if (this.lastSavedText === text && (Date.now() - this.lastSavedTime < 3000)) {
+                                        console.warn("Zignorowano duplikat:", text);
+                                        continue;
+                                    }
+
+                                    if (this.parseReminderFromText(text).hasReminder) this.detectedReminder = true;
+                                    this.saveNote(text);
+                                    
+                                    this.lastSavedText = text;
+                                    this.lastSavedTime = Date.now();
+                                }
                             }
                         };
+                        
                         this.recognition.onend = () => {
                             this.isRecording = false; 
                             playTone(300, 'sine', 0.1);
