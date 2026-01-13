@@ -224,7 +224,7 @@
         <div class="max-w-md mx-auto bg-slate-800/95 backdrop-blur border border-indigo-500/30 p-4 rounded-2xl shadow-2xl text-center">
             <p class="text-indigo-300 text-sm mb-1 font-semibold animate-pulse">Nasłuchiwanie...</p>
             <p class="text-white text-lg italic" x-text="currentTranscript || 'Mów teraz...'"></p>
-            <p class="text-slate-400 text-xs mt-2">Zakończ mówić, aby zapisać...</p>
+            <p class="text-slate-400 text-xs mt-2">Naciśnij STOP, aby zapisać natychmiast.</p>
         </div>
     </div>
     
@@ -529,28 +529,54 @@
                         };
                         
                         this.recognition.onend = () => {
-                            // Jeśli timer nie leci i nie zapisujemy, to znaczy że po prostu anulowano
-                            if (!this.saveTimer && !this.isSaving) {
+                            // Jeśli silnik zatrzymał się sam, ale nie było to wywołane ręcznie
+                            if (this.isRecording) {
                                 this.isRecording = false; 
                                 playTone(300, 'sine', 0.1);
                             }
                         };
                     }
                 },
+                
+                // --- FIX: POPRAWIONA FUNKCJA ZATRZYMYWANIA ---
                 toggleRecording() {
                     if (this.isSaving) return;
                     initAudio();
+
                     if (this.isRecording) {
-                        this.recognition.stop();
-                        // Jeśli użytkownik zatrzyma ręcznie, wymuś zapis tego co jest w buforze (opcjonalne)
+                        // 1. Natychmiastowa zmiana UI
+                        this.isRecording = false; 
+
+                        // 2. Bezwzględne zatrzymanie silnika
+                        if (this.recognition) {
+                            try {
+                                this.recognition.stop();
+                            } catch (e) { console.error(e); }
+                        }
+
+                        // 3. Sprawdź czy coś czeka w buforze
                         if (this.saveTimer) {
                             clearTimeout(this.saveTimer);
-                            this.executeSave(this.pendingText);
+                            this.saveTimer = null; // Ważne: usuń odniesienie do timera!
+                            
+                            // Zapisz to co czekało, jeśli cokolwiek było
+                            if (this.pendingText) {
+                                this.executeSave(this.pendingText);
+                                this.pendingText = '';
+                            }
                         }
                     } else {
-                        this.recognition.start();
+                        // START
+                        try {
+                            this.recognition.start();
+                        } catch (e) {
+                            console.error("Błąd startu:", e);
+                            this.isRecording = false;
+                        }
                     }
                 },
+                // ---------------------------------------------
+                
                 formatTime(d) { return new Date(d).toLocaleTimeString('pl-PL', {hour:'2-digit', minute:'2-digit'}); },
                 formatReminderTime(d) { return new Date(d).toLocaleString('pl-PL'); },
                 formatReminderBadge(d) { return Math.ceil((new Date(d) - new Date()) / (1000 * 60 * 60)) + 'h'; }
