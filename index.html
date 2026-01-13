@@ -288,7 +288,7 @@
                     await db.open();
                     await this.loadNotes();
                     this.setupSpeechRecognition();
-                    this.checkReminders(); // POPRAWIONO: wywołanie właściwej metody
+                    this.checkReminders();
                     if ("Notification" in window) Notification.requestPermission();
                 },
 
@@ -385,7 +385,7 @@
                     setInterval(check, 5000); // Sprawdzaj co 5 sek
                 },
 
-                // --- RESZTA LOGIKI (BEZ ZMIAN) ---
+                // --- RESZTA LOGIKI ---
                 
                 get filteredNotes() {
                     const q = this.searchQuery.toLowerCase();
@@ -463,7 +463,7 @@
                     await this.loadNotes();
                 },
 
-                // PRZYWRÓCONO PEŁNE FUNKCJE EDYCJI
+                // EDYCJA NOTATEK
                 startEditing(note) {
                     this.editingNoteId = note.id;
                     this.editingText = note.text;
@@ -503,25 +503,28 @@
                         };
                         
                         this.recognition.onresult = (e) => {
-                            // Iterujemy przez wyniki, które uległy zmianie (e.resultIndex)
                             for (let i = e.resultIndex; i < e.results.length; ++i) {
                                 const result = e.results[i];
-                                this.currentTranscript = result[0].transcript;
+                                const transcript = result[0].transcript.trim();
+                                
+                                this.currentTranscript = transcript;
                                 
                                 if (result.isFinal) {
-                                    const text = result[0].transcript.trim();
+                                    // --- ZABEZPIECZENIE PRZED DUPLIKATAMI ---
+                                    const now = Date.now();
                                     
-                                    // Zabezpieczenie przed duplikatami (Ten sam tekst w ciągu 3 sek)
-                                    if (this.lastSavedText === text && (Date.now() - this.lastSavedTime < 3000)) {
-                                        console.warn("Zignorowano duplikat:", text);
-                                        continue;
+                                    // Jeśli tekst jest identyczny jak ostatni zapisany i minęło mniej niż 3 sekundy -> POMIŃ
+                                    if (this.lastSavedText === transcript && (now - this.lastSavedTime < 3000)) {
+                                        console.warn("Zignorowano duplikat:", transcript);
+                                        continue; 
                                     }
+                                    // ---------------------------------------
 
-                                    if (this.parseReminderFromText(text).hasReminder) this.detectedReminder = true;
-                                    this.saveNote(text);
+                                    if (this.parseReminderFromText(transcript).hasReminder) this.detectedReminder = true;
+                                    this.saveNote(transcript);
                                     
-                                    this.lastSavedText = text;
-                                    this.lastSavedTime = Date.now();
+                                    this.lastSavedText = transcript;
+                                    this.lastSavedTime = now;
                                 }
                             }
                         };
@@ -532,6 +535,7 @@
                         };
                     }
                 },
+
                 toggleRecording() {
                     initAudio();
                     if (this.isRecording) this.recognition.stop();
