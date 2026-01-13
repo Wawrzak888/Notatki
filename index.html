@@ -159,7 +159,7 @@
             <div class="space-y-3">
                 <h2 class="text-xs font-bold text-slate-500 uppercase tracking-wider pl-1" x-text="group.title"></h2>
                 <template x-for="note in group.notes" :key="note.id">
-                    <div class="bg-slate-800 rounded-xl p-5 shadow-lg relative border border-slate-700/50">
+                    <div class="bg-slate-800 rounded-xl p-5 shadow-lg relative border border-slate-700/50 transition-all">
                         
                         <!-- Badge Przypomnienia -->
                         <div x-show="note.hasReminder && !note.reminderCompleted" class="absolute -top-2 -right-2 bg-amber-500 text-white text-xs px-2 py-1 rounded-full flex items-center space-x-1 reminder-badge z-10">
@@ -213,7 +213,8 @@
     <div class="fixed bottom-20 left-0 right-0 flex justify-center z-50 pointer-events-none">
         <button @click="toggleRecording()" 
             class="pointer-events-auto w-16 h-16 rounded-full shadow-2xl flex items-center justify-center text-2xl transition-all duration-300 transform hover:scale-105 active:scale-95 focus:outline-none"
-            :class="isRecording ? 'bg-red-500 text-white animate-pulse' : 'bg-indigo-500 text-white hover:bg-indigo-600'">
+            :class="isRecording ? 'bg-red-500 text-white animate-pulse' : 'bg-indigo-500 text-white hover:bg-indigo-600'"
+            :disabled="isSaving">
             <i class="fas" :class="isRecording ? 'fa-stop' : 'fa-microphone'"></i>
         </button>
     </div>
@@ -226,10 +227,17 @@
             <p x-show="detectedReminder" class="text-amber-400 text-xs mt-2"><i class="fas fa-bell mr-1"></i>Wykryto przypomnienie!</p>
         </div>
     </div>
+    
+    <!-- Overlay Zapisywania (Nowy) -->
+    <div x-show="isSaving" class="fixed inset-0 z-[60] flex items-center justify-center bg-black/20 backdrop-blur-sm" style="display: none;">
+        <div class="bg-indigo-600 text-white px-6 py-3 rounded-full shadow-2xl flex items-center animate-bounce">
+            <i class="fas fa-check-circle mr-2"></i> Zapisano!
+        </div>
+    </div>
 
     <script>
         let audioCtx;
-        let alarmIntervalId = null; // Do zapętlania dźwięku
+        let alarmIntervalId = null; 
         
         const db = new Dexie('VoiceBrainDB');
         db.version(3).stores({ notes: '++id, date, text, title, hasReminder, reminderDate, reminderCompleted' });
@@ -239,7 +247,6 @@
             if (audioCtx.state === 'suspended') audioCtx.resume();
         }
 
-        // Pojedynczy ton
         function playTone(freq, type = 'triangle', duration = 0.5) {
             initAudio();
             const osc = audioCtx.createOscillator();
@@ -254,11 +261,10 @@
             osc.stop(audioCtx.currentTime + duration);
         }
 
-        // Sekwencja alarmowa
         function playAlarmSequence() {
-            playTone(880, 'square', 0.2); // Pi
-            setTimeout(() => playTone(880, 'square', 0.2), 300); // Pi
-            setTimeout(() => playTone(880, 'square', 0.6), 600); // Piii
+            playTone(880, 'square', 0.2); 
+            setTimeout(() => playTone(880, 'square', 0.2), 300); 
+            setTimeout(() => playTone(880, 'square', 0.6), 600); 
             if (navigator.vibrate) navigator.vibrate([300, 100, 300, 100, 500]);
         }
 
@@ -272,7 +278,6 @@
                 detectedReminder: false,
                 showReminders: false,
                 
-                // Nowe zmienne dla alarmu
                 alarmActive: false,
                 activeAlarmTitle: '',
                 activeAlarmId: null,
@@ -280,15 +285,14 @@
                 editingNoteId: null,
                 editingText: '',
                 
-                // Zmienne do deduplikacji
-                lastSavedText: '',
-                lastSavedTime: 0,
+                // Nowe zmienne do blokady
+                isSaving: false,
 
                 async init() {
                     await db.open();
                     await this.loadNotes();
                     this.setupSpeechRecognition();
-                    this.checkReminders();
+                    this.checkReminders(); 
                     if ("Notification" in window) Notification.requestPermission();
                 },
 
@@ -296,8 +300,6 @@
                     this.notes = (await db.notes.toArray()).sort((a, b) => b.date - a.date);
                     this.isLoading = false;
                 },
-
-                // --- FUNKCJE ALARMU ---
 
                 triggerTestAlarm() {
                     this.activeAlarmTitle = "Test Alarmu";
@@ -307,9 +309,7 @@
 
                 startAlarmLoop() {
                     this.alarmActive = true;
-                    // Graj natychmiast
                     playAlarmSequence();
-                    // I powtarzaj co 2 sekundy
                     if (alarmIntervalId) clearInterval(alarmIntervalId);
                     alarmIntervalId = setInterval(() => {
                         playAlarmSequence();
@@ -330,47 +330,32 @@
                     this.activeAlarmTitle = '';
                 },
 
-                // --- INTEGRACJA Z KALENDARZEM ---
-
                 addToCalendar(note) {
                     if (!note.hasReminder || !note.reminderDate) {
                         alert("Ta notatka nie ma ustawionej daty przypomnienia.");
                         return;
                     }
-                    
                     const startDate = new Date(note.reminderDate);
-                    const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); // +1 godzina
-                    
-                    // Formatowanie daty do formatu Google: YYYYMMDDTHHMMSSZ
+                    const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); 
                     const formatGCal = (date) => date.toISOString().replace(/-|:|\.\d\d\d/g, "");
-                    
                     const title = encodeURIComponent(note.title);
                     const details = encodeURIComponent(note.text + "\n\nUtworzono w Voice Brain");
                     const start = formatGCal(startDate);
                     const end = formatGCal(endDate);
-                    
-                    // Link do Google Calendar
                     const url = `https://www.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${start}/${end}&details=${details}`;
-                    
                     window.open(url, '_blank');
                 },
-
-                // --- SPRAWDZANIE PRZYPOMNIEŃ ---
 
                 async checkReminders() {
                     const check = async () => {
                         const now = new Date();
                         const due = this.notes.filter(n => n.hasReminder && !n.reminderCompleted && new Date(n.reminderDate) <= now);
-                        
                         if (due.length > 0) {
-                            // Jeśli znajdziemy przypomnienie, uruchamiamy alarm dla pierwszego
                             const r = due[0];
-                            if (!this.alarmActive) { // Nie przerywaj jeśli już dzwoni
+                            if (!this.alarmActive) { 
                                 this.activeAlarmTitle = r.title;
                                 this.activeAlarmId = r.id;
                                 this.startAlarmLoop();
-                                
-                                // Próba powiadomienia systemowego
                                 if ("Notification" in window && Notification.permission === "granted") {
                                     new Notification("🔔 " + r.title, { 
                                         body: "Kliknij, aby otworzyć aplikację i wyłączyć alarm.",
@@ -380,12 +365,9 @@
                             }
                         }
                     };
-                    
                     check();
-                    setInterval(check, 5000); // Sprawdzaj co 5 sek
+                    setInterval(check, 5000);
                 },
-
-                // --- RESZTA LOGIKI ---
                 
                 get filteredNotes() {
                     const q = this.searchQuery.toLowerCase();
@@ -442,6 +424,17 @@
 
                 async saveNote(text) {
                     if (!text?.trim()) return;
+                    
+                    // AGRESYWNA BLOKADA: Jeśli już zapisujemy, ignoruj wszystko inne
+                    if (this.isSaving) {
+                        console.log("Blokada zapisu aktywna, ignoruję:", text);
+                        return;
+                    }
+                    
+                    this.isSaving = true; // Włącz blokadę
+                    this.isRecording = false; // Zatrzymaj nagrywanie wizualnie
+                    if (this.recognition) this.recognition.stop(); // Zatrzymaj silnik mowy
+
                     const reminder = this.parseReminderFromText(text);
                     const noteData = {
                         text: reminder.cleanedText.trim(),
@@ -451,8 +444,16 @@
                         reminderDate: reminder.reminderDate,
                         reminderCompleted: false
                     };
+                    
                     await db.notes.add(noteData);
                     await this.loadNotes();
+                    
+                    playTone(600, 'sine', 0.1); // Dźwięk sukcesu
+
+                    // Zwolnij blokadę dopiero po 4 sekundach (Hard Lock)
+                    setTimeout(() => {
+                        this.isSaving = false;
+                    }, 4000);
                 },
 
                 async deleteNote(id) {
@@ -463,7 +464,6 @@
                     await this.loadNotes();
                 },
 
-                // EDYCJA NOTATEK
                 startEditing(note) {
                     this.editingNoteId = note.id;
                     this.editingText = note.text;
@@ -503,40 +503,28 @@
                         };
                         
                         this.recognition.onresult = (e) => {
-                            for (let i = e.resultIndex; i < e.results.length; ++i) {
-                                const result = e.results[i];
-                                const transcript = result[0].transcript.trim();
-                                
-                                this.currentTranscript = transcript;
-                                
-                                if (result.isFinal) {
-                                    // --- ZABEZPIECZENIE PRZED DUPLIKATAMI ---
-                                    const now = Date.now();
-                                    
-                                    // Jeśli tekst jest identyczny jak ostatni zapisany i minęło mniej niż 3 sekundy -> POMIŃ
-                                    if (this.lastSavedText === transcript && (now - this.lastSavedTime < 3000)) {
-                                        console.warn("Zignorowano duplikat:", transcript);
-                                        continue; 
-                                    }
-                                    // ---------------------------------------
-
-                                    if (this.parseReminderFromText(transcript).hasReminder) this.detectedReminder = true;
-                                    this.saveNote(transcript);
-                                    
-                                    this.lastSavedText = transcript;
-                                    this.lastSavedTime = now;
-                                }
+                            // POBIERZ TYLKO OSTATNI WYNIK
+                            const result = e.results[e.results.length - 1];
+                            this.currentTranscript = result[0].transcript;
+                            
+                            // Jeśli wynik jest finalny i nie trwa właśnie zapisywanie...
+                            if (result.isFinal && !this.isSaving) {
+                                const text = result[0].transcript.trim();
+                                this.saveNote(text);
                             }
                         };
                         
                         this.recognition.onend = () => {
-                            this.isRecording = false; 
-                            playTone(300, 'sine', 0.1);
+                            // Jeśli nie zapisujemy, to znaczy że po prostu przestał słuchać
+                            if (!this.isSaving) {
+                                this.isRecording = false; 
+                                playTone(300, 'sine', 0.1);
+                            }
                         };
                     }
                 },
-
                 toggleRecording() {
+                    if (this.isSaving) return; // Nie pozwalaj klikać jak zapisuje
                     initAudio();
                     if (this.isRecording) this.recognition.stop();
                     else this.recognition.start();
