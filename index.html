@@ -25,6 +25,7 @@
                         slate: {
                             800: '#1e293b',
                             900: '#0f172a',
+                            750: '#252f40',
                         },
                         indigo: {
                             500: '#6366f1',
@@ -48,24 +49,30 @@
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js"></script>
 
     <style>
-        /* Ukrycie paska przewijania dla czystszego wyglądu na mobile */
-        ::-webkit-scrollbar {
-            width: 0px;
-            background: transparent;
+        ::-webkit-scrollbar { width: 0px; background: transparent; }
+        body { -webkit-tap-highlight-color: transparent; }
+        textarea { field-sizing: content; min-height: 3rem; }
+        /* Animacja pojawiania się dźwięków (opcjonalna wizualizacja) */
+        .recording-wave {
+            display: inline-block;
+            width: 6px;
+            height: 20px;
+            margin: 0 2px;
+            background-color: #6366f1;
+            border-radius: 3px;
+            animation: wave 1s infinite ease-in-out;
         }
-        body {
-            -webkit-tap-highlight-color: transparent;
-        }
-        /* Auto-resize textarea */
-        textarea {
-            field-sizing: content;
-            min-height: 3rem;
+        .recording-wave:nth-child(2) { animation-delay: 0.1s; }
+        .recording-wave:nth-child(3) { animation-delay: 0.2s; }
+        @keyframes wave {
+            0%, 100% { height: 10px; opacity: 0.5; }
+            50% { height: 25px; opacity: 1; }
         }
     </style>
 </head>
 <body class="bg-slate-900 text-white font-sans antialiased min-h-screen pb-24" x-data="voiceJournal()">
 
-    <!-- Sticky Header z Wyszukiwarką i Opcjami -->
+    <!-- Sticky Header -->
     <header class="sticky top-0 z-50 bg-slate-900/95 backdrop-blur-sm p-4 border-b border-slate-800 shadow-md">
         <div class="max-w-md mx-auto">
             <div class="flex justify-between items-center mb-3">
@@ -78,7 +85,6 @@
                     <button @click="open = !open" class="text-slate-400 hover:text-white transition-colors p-2">
                         <i class="fas fa-cog"></i>
                     </button>
-                    <!-- Dropdown Opcji -->
                     <div x-show="open" 
                          @click.outside="open = false"
                          x-transition.origin.top.right
@@ -95,7 +101,7 @@
                 <input 
                     type="text" 
                     x-model="searchQuery" 
-                    placeholder="Szukaj w myślach..." 
+                    placeholder="Szukaj w tytułach..." 
                     class="w-full bg-slate-800 text-white rounded-full py-2 pl-10 pr-4 focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-slate-500 transition-all shadow-inner border border-slate-700"
                 >
             </div>
@@ -105,7 +111,6 @@
     <!-- Główna Lista Notatek -->
     <main class="max-w-md mx-auto p-4 space-y-6">
         
-        <!-- Stan ładowania -->
         <template x-if="isLoading">
             <div class="text-center text-slate-500 mt-10">
                 <i class="fas fa-spinner fa-spin fa-2x mb-2"></i>
@@ -113,7 +118,6 @@
             </div>
         </template>
 
-        <!-- Stan pustej listy -->
         <template x-if="!isLoading && filteredNotes.length === 0">
             <div class="text-center text-slate-600 mt-20 flex flex-col items-center">
                 <div class="bg-slate-800 p-6 rounded-full mb-4">
@@ -124,57 +128,38 @@
             </div>
         </template>
 
-        <!-- Grupowana Lista Notatek -->
         <template x-for="group in groupedNotes" :key="group.title">
             <div class="space-y-3">
-                <!-- Nagłówek Grupy -->
                 <h2 class="text-xs font-bold text-slate-500 uppercase tracking-wider pl-1" x-text="group.title"></h2>
 
-                <!-- Karty Notatek -->
                 <template x-for="note in group.notes" :key="note.id">
                     <div class="bg-slate-800 rounded-xl p-5 shadow-lg relative group transition-all hover:bg-slate-750 border border-slate-700/50">
                         
-                        <!-- Przyciski akcji (góra) -->
+                        <!-- Actions -->
                         <div class="absolute top-3 right-3 flex space-x-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <!-- Edycja -->
-                            <button 
-                                @click="startEditing(note)" 
-                                x-show="editingNoteId !== note.id"
-                                class="text-slate-500 hover:text-indigo-400 p-2 transition-colors"
-                                title="Edytuj"
-                            >
-                                <i class="fas fa-pen"></i>
-                            </button>
-                            <!-- Usuwanie -->
-                            <button 
-                                @click="deleteNote(note.id)" 
-                                x-show="editingNoteId !== note.id"
-                                class="text-slate-500 hover:text-red-400 p-2 transition-colors"
-                                title="Usuń"
-                            >
-                                <i class="fas fa-times"></i>
-                            </button>
+                            <button @click="startEditing(note)" x-show="editingNoteId !== note.id" class="text-slate-500 hover:text-indigo-400 p-2"><i class="fas fa-pen"></i></button>
+                            <button @click="deleteNote(note.id)" x-show="editingNoteId !== note.id" class="text-slate-500 hover:text-red-400 p-2"><i class="fas fa-times"></i></button>
                         </div>
                         
-                        <!-- Data -->
-                        <div class="text-xs text-indigo-400 font-medium mb-2 flex items-center">
+                        <!-- Tytuł (Auto-Generated) -->
+                        <div class="mb-2">
+                            <h3 class="text-lg font-bold text-white leading-tight" x-text="note.title || 'Bez tytułu'"></h3>
+                        </div>
+
+                        <!-- Data (pod tytułem, mniejsza) -->
+                        <div class="text-xs text-indigo-400 font-medium mb-3 flex items-center">
                             <i class="far fa-clock mr-1"></i>
                             <span x-text="formatTime(note.date)"></span>
                         </div>
                         
                         <!-- Treść: Widok -->
                         <div x-show="editingNoteId !== note.id">
-                            <p class="text-slate-200 leading-relaxed whitespace-pre-wrap" x-text="note.text"></p>
+                            <p class="text-slate-300 text-sm leading-relaxed whitespace-pre-wrap opacity-80" x-text="note.text"></p>
                         </div>
 
                         <!-- Treść: Edycja -->
                         <div x-show="editingNoteId === note.id" class="mt-2">
-                            <textarea 
-                                x-model="editingText" 
-                                class="w-full bg-slate-900/50 text-white rounded-lg p-3 border border-indigo-500/50 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y"
-                                rows="3"
-                                @keydown.escape="cancelEditing()"
-                            ></textarea>
+                            <textarea x-model="editingText" class="w-full bg-slate-900/50 text-white rounded-lg p-3 border border-indigo-500/50 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y text-sm" rows="3"></textarea>
                             <div class="flex justify-end space-x-3 mt-3">
                                 <button @click="cancelEditing()" class="text-sm text-slate-400 hover:text-white px-3 py-1">Anuluj</button>
                                 <button @click="saveEdit(note.id)" class="text-sm bg-indigo-500 hover:bg-indigo-600 text-white px-4 py-1.5 rounded-full shadow-lg flex items-center">
@@ -182,65 +167,91 @@
                                 </button>
                             </div>
                         </div>
-
                     </div>
                 </template>
             </div>
         </template>
-        
         <div class="h-16"></div>
     </main>
 
-    <!-- Podgląd nagrywania (Interim Results) -->
-    <div x-show="isRecording" 
-         style="display: none;"
+    <!-- Podgląd nagrywania -->
+    <div x-show="isRecording" style="display: none;"
          x-transition:enter="transition ease-out duration-300"
          x-transition:enter-start="opacity-0 translate-y-10"
          x-transition:enter-end="opacity-100 translate-y-0"
-         x-transition:leave="transition ease-in duration-200"
-         x-transition:leave-start="opacity-100 translate-y-0"
-         x-transition:leave-end="opacity-0 translate-y-10"
          class="fixed bottom-24 left-0 right-0 px-4 z-40 pointer-events-none">
         <div class="max-w-md mx-auto bg-slate-800/90 backdrop-blur border border-indigo-500/30 p-4 rounded-2xl shadow-2xl text-center pointer-events-auto">
-            <p class="text-indigo-300 text-sm mb-1 font-semibold animate-pulse">Nasłuchiwanie...</p>
+            <p class="text-indigo-300 text-sm mb-1 font-semibold animate-pulse flex justify-center items-center">
+                <span class="recording-wave"></span>
+                <span class="recording-wave"></span>
+                <span class="recording-wave"></span>
+                &nbsp;Nasłuchiwanie...
+            </p>
             <p class="text-white text-lg italic" x-text="currentTranscript || 'Mów teraz...'"></p>
         </div>
     </div>
 
-    <!-- Floating Action Button (FAB) -->
+    <!-- FAB -->
     <div class="fixed bottom-6 left-0 right-0 flex justify-center z-50 pointer-events-none">
         <button 
             @click="toggleRecording()" 
             class="pointer-events-auto w-16 h-16 rounded-full shadow-2xl flex items-center justify-center text-2xl transition-all duration-300 transform hover:scale-105 active:scale-95 focus:outline-none focus:ring-4 focus:ring-indigo-500/50"
             :class="isRecording ? 'bg-red-500 text-white animate-pulse-fast ring-4 ring-red-500/30' : 'bg-indigo-500 text-white hover:bg-indigo-600'"
-            aria-label="Nagrywaj"
-        >
+            aria-label="Nagrywaj">
             <i class="fas" :class="isRecording ? 'fa-stop' : 'fa-microphone'"></i>
         </button>
     </div>
 
     <!-- Modal błędu -->
-    <div x-show="errorMsg" style="display: none;" 
-         class="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
-         x-transition.opacity>
+    <div x-show="errorMsg" style="display: none;" class="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" x-transition.opacity>
         <div class="bg-slate-800 rounded-2xl p-6 max-w-sm w-full text-center border border-red-500/30 shadow-2xl">
-            <div class="w-12 h-12 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-4">
-                <i class="fas fa-exclamation-triangle text-red-500 text-xl"></i>
-            </div>
+            <div class="w-12 h-12 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-4"><i class="fas fa-exclamation-triangle text-red-500 text-xl"></i></div>
             <h3 class="text-lg font-bold text-white mb-2">Wystąpił błąd</h3>
             <p class="text-slate-300 mb-6 text-sm" x-text="errorMsg"></p>
-            <button @click="errorMsg = null" class="bg-slate-700 hover:bg-slate-600 text-white px-6 py-2 rounded-full w-full transition-colors">
-                Rozumiem
-            </button>
+            <button @click="errorMsg = null" class="bg-slate-700 hover:bg-slate-600 text-white px-6 py-2 rounded-full w-full transition-colors">Rozumiem</button>
         </div>
     </div>
 
     <script>
-        // --- Konfiguracja Bazy Danych (Dexie.js) ---
+        // --- KONFIGURACJA DŹWIĘKÓW (Base64) ---
+        // Krótkie dźwięki generowane syntetycznie i zakodowane jako Base64, aby nie wymagały zewnętrznych plików
+        const soundStartSrc = "data:audio/wav;base64,UklGRl9vT1BXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU"; // Bardzo krótki 'ping'
+        // Rozszerzony Base64 dla lepszego dźwięku startu (używamy prostego audio object z API w init)
+        // Tu generujemy dźwięki za pomocą AudioContext w kodzie, żeby oszczędzić miejsce i mieć lepszą jakość
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        
+        function playBeep(type) {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const oscillator = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            
+            if (type === 'start') {
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(440, audioCtx.currentTime); // A4
+                oscillator.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.1); // Slide up
+                gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+                oscillator.start();
+                oscillator.stop(audioCtx.currentTime + 0.1);
+            } else {
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(880, audioCtx.currentTime);
+                oscillator.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.1); // Slide down
+                gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+                oscillator.start();
+                oscillator.stop(audioCtx.currentTime + 0.1);
+            }
+        }
+
+        // --- BAZA DANYCH ---
         const db = new Dexie('VoiceBrainDB');
-        db.version(1).stores({
-            notes: '++id, date, text'
-        });
+        // UPGRADE DB: Dodajemy pole 'title' do wersji 2
+        db.version(1).stores({ notes: '++id, date, text' });
+        db.version(2).stores({ notes: '++id, date, text, title' });
 
         document.addEventListener('alpine:init', () => {
             Alpine.data('voiceJournal', () => ({
@@ -249,8 +260,8 @@
                 isRecording: false,
                 manualStop: false, 
                 currentTranscript: '',
-                sessionTranscriptBuffer: '', // Pełny tekst z poprzednich sesji
-                currentSessionFinal: '',     // Tekst zatwierdzony w obecnej sesji
+                sessionTranscriptBuffer: '',
+                currentSessionFinal: '',
                 recognition: null,
                 isLoading: true,
                 errorMsg: null,
@@ -258,14 +269,15 @@
                 // Edycja
                 editingNoteId: null,
                 editingText: '',
+                
+                // Wake Lock
+                wakeLock: null,
 
                 async init() {
-                    console.log('Inicjalizacja Voice Brain...');
+                    console.log('Inicjalizacja Voice Brain v2...');
                     await this.loadNotes();
                     this.setupSpeechRecognition();
                 },
-
-                // --- Zarządzanie Notatkami ---
 
                 async loadNotes() {
                     try {
@@ -281,8 +293,10 @@
                 get filteredNotes() {
                     if (!this.searchQuery) return this.notes;
                     const lowerQuery = this.searchQuery.toLowerCase();
+                    // Szukamy w tytule i w treści
                     return this.notes.filter(note => 
-                        note.text.toLowerCase().includes(lowerQuery)
+                        (note.title && note.title.toLowerCase().includes(lowerQuery)) ||
+                        (note.text && note.text.toLowerCase().includes(lowerQuery))
                     );
                 },
 
@@ -294,27 +308,44 @@
                     this.filteredNotes.forEach(note => {
                         const noteDate = new Date(note.date).toDateString();
                         let groupTitle = noteDate;
-                        
                         if (noteDate === today) groupTitle = 'Dzisiaj';
                         else if (noteDate === yesterday) groupTitle = 'Wczoraj';
-                        else {
-                             groupTitle = new Date(note.date).toLocaleDateString('pl-PL', { weekday: 'long', day: 'numeric', month: 'long' });
-                        }
+                        else groupTitle = new Date(note.date).toLocaleDateString('pl-PL', { weekday: 'long', day: 'numeric', month: 'long' });
 
                         if (!groups[groupTitle]) {
                             groups[groupTitle] = { title: groupTitle, notes: [] };
                         }
                         groups[groupTitle].notes.push(note);
                     });
-
                     return Object.values(groups); 
+                },
+
+                // --- GENERATOR TYTUŁÓW ---
+                generateAutoTitle(text) {
+                    if (!text || text.trim().length === 0) return 'Nowa notatka';
+                    
+                    // Usuń interpunkcję, weź pierwsze 4 słowa
+                    const cleanText = text.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g,"");
+                    const words = cleanText.trim().split(/\s+/);
+                    const titleWords = words.slice(0, 4);
+                    
+                    let title = titleWords.join(' ');
+                    // Pierwsza litera wielka
+                    title = title.charAt(0).toUpperCase() + title.slice(1);
+                    
+                    // Dodaj kropkę, jeśli tekst był dłuższy
+                    if (words.length > 4) title += '...';
+                    
+                    return title;
                 },
 
                 async saveNote(text) {
                     if (!text || text.trim().length === 0) return;
                     try {
+                        const title = this.generateAutoTitle(text);
                         await db.notes.add({
                             text: text.trim(),
+                            title: title,
                             date: new Date()
                         });
                         await this.loadNotes();
@@ -348,7 +379,9 @@
 
                 async saveEdit(id) {
                     try {
-                        await db.notes.update(id, { text: this.editingText });
+                        // Aktualizacja tekstu i tytułu (tytuł się zmieni po edycji!)
+                        const title = this.generateAutoTitle(this.editingText);
+                        await db.notes.update(id, { text: this.editingText, title: title });
                         await this.loadNotes();
                         this.editingNoteId = null;
                     } catch (e) {
@@ -362,7 +395,6 @@
                         const dataStr = JSON.stringify(allData, null, 2);
                         const blob = new Blob([dataStr], { type: "application/json" });
                         const url = URL.createObjectURL(blob);
-                        
                         const a = document.createElement('a');
                         a.href = url;
                         a.download = `voice-journal-backup-${new Date().toISOString().slice(0,10)}.json`;
@@ -375,7 +407,30 @@
                     }
                 },
 
-                // --- Web Speech API (Auto-Restart Loop) ---
+                // --- WAKE LOCK ---
+                async requestWakeLock() {
+                    if ('wakeLock' in navigator) {
+                        try {
+                            this.wakeLock = await navigator.wakeLock.request('screen');
+                            console.log('Wake Lock aktywny');
+                            this.wakeLock.addEventListener('release', () => {
+                                console.log('Wake Lock zwolniony');
+                                this.wakeLock = null;
+                            });
+                        } catch (err) {
+                            console.error(`Błąd Wake Lock: ${err.name}, ${err.message}`);
+                        }
+                    }
+                },
+
+                releaseWakeLock() {
+                    if (this.wakeLock !== null) {
+                        this.wakeLock.release()
+                            .then(() => { this.wakeLock = null; });
+                    }
+                },
+
+                // --- WEB SPEECH API ---
                 setupSpeechRecognition() {
                     this.SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
                     if (!this.SpeechRecognition) {
@@ -395,18 +450,14 @@
                         this.isRecording = true;
                         this.currentSessionFinal = ''; 
                         console.log('Nagrywanie rozpoczęte');
+                        playBeep('start'); // Dźwięk startu
                     };
 
-                    // POPRAWKA LOGIKI: Tylko ostatni wynik
                     this.recognition.onresult = (event) => {
                         const results = event.results;
-                        // Pobieramy tylko ostatni wynik (ostatnia wersja tekstu)
-                        // W trybie continuous last result zawiera zazwyczaj pełny akumulowany tekst obecnej sesji
                         const lastResult = results[results.length - 1];
                         const transcript = lastResult[0].transcript;
 
-                        // Jeśli wynik jest finalny, zapisujemy go jako "definitywny dla tej sesji"
-                        // Jeśli jest interim (w trakcie mówienia), pokazujemy go tylko w podglądzie
                         if (lastResult.isFinal) {
                             this.currentSessionFinal = transcript;
                             this.currentTranscript = transcript;
@@ -430,15 +481,9 @@
                         console.log('Nagrywanie zakończone (event)');
                         
                         const newFinal = this.currentSessionFinal.trim();
-                        
-                        // Zabezpieczenie przed duplikatami przy auto-restart (Android glitch)
-                        // Jeśli nowy tekst jest taki sam jak koniec starego bufora, prawdopodobnie to powtórka
-                        // Lub jeśli jest identyczny z ostatnim zapisanym w bufferze
                         const bufferEnd = this.sessionTranscriptBuffer.trim().slice(-newFinal.length);
                         
                         if (newFinal && newFinal !== bufferEnd) {
-                            // Jeśli tekst jest różny, dodajemy do głównego bufora
-                            // Używamy cleanText aby upewnić się, że nie ma drobnych artefaktów
                             const cleanedNew = this.cleanText(newFinal);
                             if (cleanedNew) {
                                 this.sessionTranscriptBuffer += (this.sessionTranscriptBuffer ? ' ' : '') + cleanedNew + ' ';
@@ -448,7 +493,6 @@
                         this.currentSessionFinal = '';
                         this.currentTranscript = '';
 
-                        // LOGIKA AUTO-RESTARTU
                         if (!this.manualStop && this.isRecording) {
                             console.log('Auto-restart nagrywania...');
                             setTimeout(() => {
@@ -456,6 +500,9 @@
                             }, 100);
                         } else {
                             this.isRecording = false;
+                            playBeep('stop'); // Dźwięk końca
+                            this.releaseWakeLock(); // Zwolnij blokadę ekranu
+                            
                             const finalToSave = this.sessionTranscriptBuffer.trim();
                             if (finalToSave) {
                                 this.saveNote(finalToSave);
@@ -473,13 +520,8 @@
 
                 cleanText(text) {
                     if (!text) return '';
-                    // 1. Usuń wielokrotne spacje
                     let clean = text.replace(/\s+/g, ' ').trim();
-                    
-                    // 2. Usuń powtórzenia słów (np. "test test" -> "test")
-                    // Regex: łapie słowo (min 3 litery) powtórzone bezpośrednio po sobie
                     clean = clean.replace(/(\b\w{3,}\b)( \1\b)+/gi, '$1');
-                    
                     return clean;
                 },
 
@@ -490,11 +532,13 @@
                         this.manualStop = true; 
                         if (this.recognition) this.recognition.stop();
                         this.isRecording = false;
+                        // Dźwięk stopu i zwolnienie wake locka nastąpi w onend
                     } else {
                         this.manualStop = false;
                         this.sessionTranscriptBuffer = ''; 
                         this.currentSessionFinal = '';
                         this.currentTranscript = '';
+                        this.requestWakeLock(); // Poproś o blokadę ekranu
                         this.startRecordingLoop();
                     }
                 },
