@@ -224,7 +224,7 @@
         <div class="max-w-md mx-auto bg-slate-800/95 backdrop-blur border border-indigo-500/30 p-4 rounded-2xl shadow-2xl text-center">
             <p class="text-indigo-300 text-sm mb-1 font-semibold animate-pulse">Nasłuchiwanie...</p>
             <p class="text-white text-lg italic" x-text="currentTranscript || 'Mów teraz...'"></p>
-            <p x-show="detectedReminder" class="text-amber-400 text-xs mt-2"><i class="fas fa-bell mr-1"></i>Wykryto przypomnienie!</p>
+            <p class="text-slate-400 text-xs mt-2">Zakończ mówić, aby zapisać...</p>
         </div>
     </div>
     
@@ -236,6 +236,7 @@
     </div>
 
     <script>
+        // GLOBALNE ZMIENNE POZA ALPINE
         let audioCtx;
         let alarmIntervalId = null; 
         
@@ -275,7 +276,6 @@
                 isRecording: false,
                 currentTranscript: '',
                 isLoading: true,
-                detectedReminder: false,
                 showReminders: false,
                 
                 alarmActive: false,
@@ -285,8 +285,11 @@
                 editingNoteId: null,
                 editingText: '',
                 
-                // Nowe zmienne do blokady
+                // --- NOWY MECHANIZM BUFORA (Debounce) ---
                 isSaving: false,
+                pendingText: '',
+                saveTimer: null,
+                // ----------------------------------------
 
                 async init() {
                     await db.open();
@@ -422,18 +425,30 @@
                     return d > now ? d : null;
                 },
 
-                async saveNote(text) {
+                // --- GŁÓWNA ZMIANA: Zapis z buforem (Debounce) ---
+                triggerBufferedSave(text) {
+                    this.pendingText = text;
+                    
+                    // Jeśli licznik już leci, zresetuj go (użytkownik wciąż mówi)
+                    if (this.saveTimer) clearTimeout(this.saveTimer);
+                    
+                    // Ustaw nowy licznik - czekamy 1.5 sekundy ciszy/stabilności
+                    this.saveTimer = setTimeout(() => {
+                        this.executeSave(this.pendingText);
+                        this.saveTimer = null;
+                        this.pendingText = '';
+                        // Wyłącz nasłuchiwanie, bo uznaliśmy że to koniec zdania
+                        if (this.recognition) this.recognition.stop();
+                        this.isRecording = false;
+                    }, 1500);
+                },
+
+                async executeSave(text) {
                     if (!text?.trim()) return;
                     
-                    // AGRESYWNA BLOKADA: Jeśli już zapisujemy, ignoruj wszystko inne
-                    if (this.isSaving) {
-                        console.log("Blokada zapisu aktywna, ignoruję:", text);
-                        return;
-                    }
-                    
-                    this.isSaving = true; // Włącz blokadę
-                    this.isRecording = false; // Zatrzymaj nagrywanie wizualnie
-                    if (this.recognition) this.recognition.stop(); // Zatrzymaj silnik mowy
+                    // Dodatkowe zabezpieczenie
+                    if (this.isSaving) return;
+                    this.isSaving = true;
 
                     const reminder = this.parseReminderFromText(text);
                     const noteData = {
@@ -448,13 +463,12 @@
                     await db.notes.add(noteData);
                     await this.loadNotes();
                     
-                    playTone(600, 'sine', 0.1); // Dźwięk sukcesu
+                    playTone(600, 'sine', 0.1);
 
-                    // Zwolnij blokadę dopiero po 4 sekundach (Hard Lock)
-                    setTimeout(() => {
-                        this.isSaving = false;
-                    }, 4000);
+                    // Odblokuj możliwość kolejnego zapisu po chwili
+                    setTimeout(() => { this.isSaving = false; }, 2000);
                 },
+                // -------------------------------------------------
 
                 async deleteNote(id) {
                     if (confirm('Usunąć?')) { await db.notes.delete(id); await this.loadNotes(); }
@@ -503,20 +517,20 @@
                         };
                         
                         this.recognition.onresult = (e) => {
-                            // POBIERZ TYLKO OSTATNI WYNIK
+                            // Pobieramy ZAWSZE ostatni wynik z sesji
                             const result = e.results[e.results.length - 1];
                             this.currentTranscript = result[0].transcript;
                             
-                            // Jeśli wynik jest finalny i nie trwa właśnie zapisywanie...
-                            if (result.isFinal && !this.isSaving) {
+                            // Jeśli wynik jest finalny, wrzucamy go do BUFORA
+                            if (result.isFinal) {
                                 const text = result[0].transcript.trim();
-                                this.saveNote(text);
+                                this.triggerBufferedSave(text);
                             }
                         };
                         
                         this.recognition.onend = () => {
-                            // Jeśli nie zapisujemy, to znaczy że po prostu przestał słuchać
-                            if (!this.isSaving) {
+                            // Jeśli timer nie leci i nie zapisujemy, to znaczy że po prostu anulowano
+                            if (!this.saveTimer && !this.isSaving) {
                                 this.isRecording = false; 
                                 playTone(300, 'sine', 0.1);
                             }
@@ -524,10 +538,18 @@
                     }
                 },
                 toggleRecording() {
-                    if (this.isSaving) return; // Nie pozwalaj klikać jak zapisuje
+                    if (this.isSaving) return;
                     initAudio();
-                    if (this.isRecording) this.recognition.stop();
-                    else this.recognition.start();
+                    if (this.isRecording) {
+                        this.recognition.stop();
+                        // Jeśli użytkownik zatrzyma ręcznie, wymuś zapis tego co jest w buforze (opcjonalne)
+                        if (this.saveTimer) {
+                            clearTimeout(this.saveTimer);
+                            this.executeSave(this.pendingText);
+                        }
+                    } else {
+                        this.recognition.start();
+                    }
                 },
                 formatTime(d) { return new Date(d).toLocaleTimeString('pl-PL', {hour:'2-digit', minute:'2-digit'}); },
                 formatReminderTime(d) { return new Date(d).toLocaleString('pl-PL'); },
