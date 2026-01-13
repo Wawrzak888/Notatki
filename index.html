@@ -295,6 +295,38 @@
             }
         }
 
+        function playReminderSound() {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            
+            // Powtórz dzwonek 3 razy dla pewności
+            for (let repeat = 0; repeat < 3; repeat++) {
+                const offset = repeat * 1.2; // Każdy dzwonek po 1.2 sekundy
+                const times = [0, 0.15, 0.3, 0.6, 0.75, 0.9];
+                const frequencies = [800, 1000, 800, 1000, 800, 1000];
+                
+                times.forEach((time, index) => {
+                    const oscillator = audioCtx.createOscillator();
+                    const gainNode = audioCtx.createGain();
+                    
+                    oscillator.connect(gainNode);
+                    gainNode.connect(audioCtx.destination);
+                    
+                    oscillator.type = 'sine';
+                    oscillator.frequency.setValueAtTime(frequencies[index], audioCtx.currentTime + time + offset);
+                    
+                    // Głośniejszy dźwięk (0.4 zamiast 0.3)
+                    gainNode.gain.setValueAtTime(0, audioCtx.currentTime + time + offset);
+                    gainNode.gain.linearRampToValueAtTime(0.4, audioCtx.currentTime + time + offset + 0.01);
+                    gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + time + offset + 0.12);
+                    
+                    oscillator.start(audioCtx.currentTime + time + offset);
+                    oscillator.stop(audioCtx.currentTime + time + offset + 0.12);
+                });
+            }
+            
+            console.log('🔔 Odtwarzam dźwięk przypomnienia (3x)');
+        }
+
         const db = new Dexie('VoiceBrainDB');
         db.version(1).stores({ notes: '++id, date, text' });
         db.version(2).stores({ notes: '++id, date, text, title' });
@@ -610,11 +642,13 @@
                 async requestNotificationPermission() {
                     if (!("Notification" in window)) {
                         console.log("Przeglądarka nie wspiera powiadomień");
+                        this.showInAppNotification("Info", "Twoja przeglądarka nie wspiera powiadomień systemowych");
                         return;
                     }
 
                     if (Notification.permission === "granted") {
                         console.log("Powiadomienia już włączone");
+                        this.showInAppNotification("✅ Powiadomienia", "Powiadomienia są już włączone");
                         return;
                     }
 
@@ -622,8 +656,16 @@
                         const permission = await Notification.requestPermission();
                         if (permission === "granted") {
                             this.showNotification("Powiadomienia włączone!", "Będę Cię informować o przypomnieniach");
+                        } else {
+                            this.showInAppNotification("Info", "Powiadomienia zablokowane - będę używać wibracji i dźwięku");
                         }
                     }
+                },
+
+                playReminderSound() {
+                    playReminderSound();
+                    if (navigator.vibrate) navigator.vibrate([300, 100, 300]);
+                    this.showInAppNotification("🔊 Test dźwięku", "Tak będzie brzmieć przypomnienie");
                 },
 
                 showNotification(title, body) {
@@ -709,8 +751,13 @@
                     for (const reminder of reminders) {
                         console.log('🔔 Wykonuję przypomnienie:', reminder.title);
                         
-                        // Wibracje (zawsze działają)
-                        if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 200]);
+                        // DŹWIĘK DZWONKA - najważniejsze!
+                        playReminderSound();
+                        
+                        // Wibracje jako dodatek
+                        if (navigator.vibrate) {
+                            navigator.vibrate([300, 100, 300, 100, 300]);
+                        }
                         
                         // Pokaż powiadomienie (z automatycznym fallbackiem do in-app)
                         this.showNotification('⏰ Przypomnienie!', reminder.title);
