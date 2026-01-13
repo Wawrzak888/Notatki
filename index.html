@@ -298,7 +298,13 @@
         const db = new Dexie('VoiceBrainDB');
         db.version(1).stores({ notes: '++id, date, text' });
         db.version(2).stores({ notes: '++id, date, text, title' });
-        db.version(3).stores({ notes: '++id, date, text, title, hasReminder, reminderDate, reminderCompleted' });
+        db.version(3).stores({ notes: '++id, date, text, title, hasReminder, reminderDate, reminderCompleted' }).upgrade(tx => {
+            return tx.table('notes').toCollection().modify(note => {
+                note.hasReminder = note.hasReminder || false;
+                note.reminderDate = note.reminderDate || null;
+                note.reminderCompleted = note.reminderCompleted || false;
+            });
+        });
 
         document.addEventListener('alpine:init', () => {
             Alpine.data('voiceJournal', () => ({
@@ -322,7 +328,18 @@
                 reminderCheckInterval: null,
 
                 async init() {
-                    console.log('Inicjalizacja Voice Brain v3 (z przypomnieniami)...');
+                    console.log('🚀 Inicjalizacja Voice Brain v3 (z przypomnieniami)...');
+                    
+                    try {
+                        // Testowe otwarcie bazy danych
+                        await db.open();
+                        console.log('✅ Baza danych otwarta pomyślnie');
+                        console.log('📊 Wersja bazy:', db.verno);
+                    } catch (e) {
+                        console.error('❌ Błąd otwierania bazy danych:', e);
+                        this.errorMsg = `Błąd bazy danych: ${e.message}`;
+                    }
+                    
                     await this.loadNotes();
                     this.setupSpeechRecognition();
                     this.startReminderCheck();
@@ -382,6 +399,7 @@
                 },
 
                 parseReminderFromText(text) {
+                    console.log('🔍 Parsowanie tekstu na przypomnienie:', text);
                     const lowerText = text.toLowerCase();
                     
                     const patterns = [
@@ -396,7 +414,10 @@
                     for (const pattern of patterns) {
                         const match = lowerText.match(pattern.regex);
                         if (match) {
+                            console.log('✅ Znaleziono wzorzec:', pattern.type, 'Match:', match);
                             const reminderDate = this.calculateReminderDate(match, pattern.type);
+                            console.log('📅 Wyliczona data przypomnienia:', reminderDate);
+                            
                             if (reminderDate) {
                                 const cleanedText = text.replace(match[0], '').trim();
                                 return { 
@@ -408,6 +429,7 @@
                         }
                     }
                     
+                    console.log('❌ Nie znaleziono wzorca przypomnienia');
                     return { hasReminder: false, cleanedText: text };
                 },
 
@@ -479,7 +501,10 @@
                 async saveNote(text) {
                     if (!text || text.trim().length === 0) return;
                     try {
+                        console.log('📝 Zapisuję notatkę:', text);
                         const reminderInfo = this.parseReminderFromText(text);
+                        console.log('🔔 Wynik parsowania przypomnienia:', reminderInfo);
+                        
                         const finalText = reminderInfo.cleanedText;
                         const title = this.generateAutoTitle(finalText);
                         
@@ -492,18 +517,24 @@
                             reminderCompleted: false
                         };
                         
-                        await db.notes.add(noteData);
+                        console.log('💾 Dane do zapisania:', noteData);
+                        
+                        const savedId = await db.notes.add(noteData);
+                        console.log('✅ Notatka zapisana z ID:', savedId);
+                        
                         await this.loadNotes();
                         
                         if (reminderInfo.hasReminder) {
+                            console.log('🎉 Pokazuję powiadomienie o przypomnieniu');
                             this.showNotification('Przypomnienie ustawione!', 
                                 `Przypomnę Ci: ${this.formatReminderTime(reminderInfo.reminderDate)}`);
                         }
                         
                         if (navigator.vibrate) navigator.vibrate(50);
                     } catch (e) {
-                        console.error('Błąd zapisu:', e);
-                        this.errorMsg = 'Nie udało się zapisać notatki.';
+                        console.error('❌ Błąd zapisu - szczegóły:', e);
+                        console.error('❌ Stack trace:', e.stack);
+                        this.errorMsg = `Nie udało się zapisać notatki: ${e.message}`;
                     }
                 },
 
