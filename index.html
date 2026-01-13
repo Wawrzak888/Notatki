@@ -52,7 +52,7 @@
         ::-webkit-scrollbar { width: 0px; background: transparent; }
         body { -webkit-tap-highlight-color: transparent; }
         textarea { field-sizing: content; min-height: 3rem; }
-        /* Animacja pojawiania się dźwięków (opcjonalna wizualizacja) */
+        /* Animacja fal dźwięku */
         .recording-wave {
             display: inline-block;
             width: 6px;
@@ -70,7 +70,7 @@
         }
     </style>
 </head>
-<body class="bg-slate-900 text-white font-sans antialiased min-h-screen pb-24" x-data="voiceJournal()">
+<body class="bg-slate-900 text-white font-sans antialiased min-h-screen flex flex-col relative" x-data="voiceJournal()">
 
     <!-- Sticky Header -->
     <header class="sticky top-0 z-50 bg-slate-900/95 backdrop-blur-sm p-4 border-b border-slate-800 shadow-md">
@@ -109,7 +109,9 @@
     </header>
 
     <!-- Główna Lista Notatek -->
-    <main class="max-w-md mx-auto p-4 space-y-6">
+    <!-- flex-grow sprawia, że main wypełnia dostępną przestrzeń, stopka spada na dół -->
+    <!-- pb-32 dodaje padding na dole, aby Floating Button i stopka nie zasłaniały treści -->
+    <main class="max-w-md mx-auto p-4 space-y-6 flex-grow pb-32 w-full">
         
         <template x-if="isLoading">
             <div class="text-center text-slate-500 mt-10">
@@ -171,8 +173,12 @@
                 </template>
             </div>
         </template>
-        <div class="h-16"></div>
     </main>
+
+    <!-- STOPKA -->
+    <footer class="text-center py-6 text-slate-600 text-xs z-10">
+        <span>Wykonanie Tomasz Wawrzak 2026 z asystą AI Claude</span>
+    </footer>
 
     <!-- Podgląd nagrywania -->
     <div x-show="isRecording" style="display: none;"
@@ -214,10 +220,6 @@
 
     <script>
         // --- KONFIGURACJA DŹWIĘKÓW (Base64) ---
-        // Krótkie dźwięki generowane syntetycznie i zakodowane jako Base64, aby nie wymagały zewnętrznych plików
-        const soundStartSrc = "data:audio/wav;base64,UklGRl9vT1BXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU"; // Bardzo krótki 'ping'
-        // Rozszerzony Base64 dla lepszego dźwięku startu (używamy prostego audio object z API w init)
-        // Tu generujemy dźwięki za pomocą AudioContext w kodzie, żeby oszczędzić miejsce i mieć lepszą jakość
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         
         function playBeep(type) {
@@ -230,8 +232,8 @@
             
             if (type === 'start') {
                 oscillator.type = 'sine';
-                oscillator.frequency.setValueAtTime(440, audioCtx.currentTime); // A4
-                oscillator.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.1); // Slide up
+                oscillator.frequency.setValueAtTime(440, audioCtx.currentTime); 
+                oscillator.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.1); 
                 gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
                 gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
                 oscillator.start();
@@ -239,7 +241,7 @@
             } else {
                 oscillator.type = 'sine';
                 oscillator.frequency.setValueAtTime(880, audioCtx.currentTime);
-                oscillator.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.1); // Slide down
+                oscillator.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.1); 
                 gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
                 gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
                 oscillator.start();
@@ -249,7 +251,6 @@
 
         // --- BAZA DANYCH ---
         const db = new Dexie('VoiceBrainDB');
-        // UPGRADE DB: Dodajemy pole 'title' do wersji 2
         db.version(1).stores({ notes: '++id, date, text' });
         db.version(2).stores({ notes: '++id, date, text, title' });
 
@@ -293,7 +294,6 @@
                 get filteredNotes() {
                     if (!this.searchQuery) return this.notes;
                     const lowerQuery = this.searchQuery.toLowerCase();
-                    // Szukamy w tytule i w treści
                     return this.notes.filter(note => 
                         (note.title && note.title.toLowerCase().includes(lowerQuery)) ||
                         (note.text && note.text.toLowerCase().includes(lowerQuery))
@@ -320,22 +320,14 @@
                     return Object.values(groups); 
                 },
 
-                // --- GENERATOR TYTUŁÓW ---
                 generateAutoTitle(text) {
                     if (!text || text.trim().length === 0) return 'Nowa notatka';
-                    
-                    // Usuń interpunkcję, weź pierwsze 4 słowa
                     const cleanText = text.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g,"");
                     const words = cleanText.trim().split(/\s+/);
                     const titleWords = words.slice(0, 4);
-                    
                     let title = titleWords.join(' ');
-                    // Pierwsza litera wielka
                     title = title.charAt(0).toUpperCase() + title.slice(1);
-                    
-                    // Dodaj kropkę, jeśli tekst był dłuższy
                     if (words.length > 4) title += '...';
-                    
                     return title;
                 },
 
@@ -379,7 +371,6 @@
 
                 async saveEdit(id) {
                     try {
-                        // Aktualizacja tekstu i tytułu (tytuł się zmieni po edycji!)
                         const title = this.generateAutoTitle(this.editingText);
                         await db.notes.update(id, { text: this.editingText, title: title });
                         await this.loadNotes();
@@ -407,7 +398,6 @@
                     }
                 },
 
-                // --- WAKE LOCK ---
                 async requestWakeLock() {
                     if ('wakeLock' in navigator) {
                         try {
@@ -430,7 +420,6 @@
                     }
                 },
 
-                // --- WEB SPEECH API ---
                 setupSpeechRecognition() {
                     this.SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
                     if (!this.SpeechRecognition) {
@@ -450,7 +439,7 @@
                         this.isRecording = true;
                         this.currentSessionFinal = ''; 
                         console.log('Nagrywanie rozpoczęte');
-                        playBeep('start'); // Dźwięk startu
+                        playBeep('start');
                     };
 
                     this.recognition.onresult = (event) => {
@@ -470,7 +459,6 @@
                         console.error('Błąd Speech API:', event.error);
                         if (event.error === 'no-speech') return; 
                         if (event.error === 'network') {
-                            // ignoruj, onend obsłuży restart
                         } else {
                              this.isRecording = false;
                              this.manualStop = true;
@@ -500,8 +488,8 @@
                             }, 100);
                         } else {
                             this.isRecording = false;
-                            playBeep('stop'); // Dźwięk końca
-                            this.releaseWakeLock(); // Zwolnij blokadę ekranu
+                            playBeep('stop');
+                            this.releaseWakeLock();
                             
                             const finalToSave = this.sessionTranscriptBuffer.trim();
                             if (finalToSave) {
@@ -532,13 +520,12 @@
                         this.manualStop = true; 
                         if (this.recognition) this.recognition.stop();
                         this.isRecording = false;
-                        // Dźwięk stopu i zwolnienie wake locka nastąpi w onend
                     } else {
                         this.manualStop = false;
                         this.sessionTranscriptBuffer = ''; 
                         this.currentSessionFinal = '';
                         this.currentTranscript = '';
-                        this.requestWakeLock(); // Poproś o blokadę ekranu
+                        this.requestWakeLock();
                         this.startRecordingLoop();
                     }
                 },
