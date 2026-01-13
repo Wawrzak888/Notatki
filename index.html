@@ -247,7 +247,7 @@
                 notes: [],
                 searchQuery: '',
                 isRecording: false,
-                manualStop: false, // Flaga: czy użytkownik zatrzymał nagrywanie ręcznie
+                manualStop: false, 
                 currentTranscript: '',
                 sessionTranscriptBuffer: '', // Pełny tekst z poprzednich sesji
                 currentSessionFinal: '',     // Tekst zatwierdzony w obecnej sesji
@@ -286,7 +286,6 @@
                     );
                 },
 
-                // Grupowanie notatek po dacie
                 get groupedNotes() {
                     const groups = {};
                     const today = new Date().toDateString();
@@ -299,7 +298,6 @@
                         if (noteDate === today) groupTitle = 'Dzisiaj';
                         else if (noteDate === yesterday) groupTitle = 'Wczoraj';
                         else {
-                             // Formatowanie pełnej daty dla starszych
                              groupTitle = new Date(note.date).toLocaleDateString('pl-PL', { weekday: 'long', day: 'numeric', month: 'long' });
                         }
 
@@ -309,8 +307,6 @@
                         groups[groupTitle].notes.push(note);
                     });
 
-                    // Konwersja obiektu na tablicę (zachowując kolejność kluczy nie jest gwarantowane, ale sortowanie notatek było chronologiczne, więc iteracja powinna być ok)
-                    // Dla pewności sortujemy klucze grup (choć w tym przypadku klucze to stringi, więc trudniej. Lepiej polegać na kolejności pojawiania się)
                     return Object.values(groups); 
                 },
 
@@ -340,7 +336,6 @@
                     }
                 },
 
-                // --- Edycja Inline ---
                 startEditing(note) {
                     this.editingNoteId = note.id;
                     this.editingText = note.text;
@@ -361,7 +356,6 @@
                     }
                 },
 
-                // --- Export / Backup ---
                 async exportBackup() {
                     try {
                         const allData = await db.notes.toArray();
@@ -383,7 +377,6 @@
 
                 // --- Web Speech API (Auto-Restart Loop) ---
                 setupSpeechRecognition() {
-                    // Sprawdź dostępność API
                     this.SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
                     if (!this.SpeechRecognition) {
                         this.errorMsg = 'Twoja przeglądarka nie obsługuje rozpoznawania mowy.';
@@ -393,8 +386,6 @@
                 startRecordingLoop() {
                     if (!this.SpeechRecognition) return;
 
-                    // ZAWSZE twórz nową instancję przy starcie/restarcie, aby uniknąć duplikacji (Android bug)
-                    // oraz problemów z "pamięcią" instancji.
                     this.recognition = new this.SpeechRecognition();
                     this.recognition.continuous = true;
                     this.recognition.interimResults = true;
@@ -403,34 +394,30 @@
                     this.recognition.onstart = () => {
                         this.isRecording = true;
                         this.currentSessionFinal = ''; 
-                        console.log('Nagrywanie rozpoczęte (nowa instancja)');
+                        console.log('Nagrywanie rozpoczęte');
                     };
 
+                    // POPRAWKA LOGIKI: Tylko ostatni wynik
                     this.recognition.onresult = (event) => {
-                        let interim = '';
-                        let finalForThisSession = '';
+                        const results = event.results;
+                        // Pobieramy tylko ostatni wynik (ostatnia wersja tekstu)
+                        // W trybie continuous last result zawiera zazwyczaj pełny akumulowany tekst obecnej sesji
+                        const lastResult = results[results.length - 1];
+                        const transcript = lastResult[0].transcript;
 
-                        for (let i = 0; i < event.results.length; ++i) {
-                            if (event.results[i].isFinal) {
-                                finalForThisSession += event.results[i][0].transcript + ' ';
-                            } else {
-                                interim += event.results[i][0].transcript;
-                            }
+                        // Jeśli wynik jest finalny, zapisujemy go jako "definitywny dla tej sesji"
+                        // Jeśli jest interim (w trakcie mówienia), pokazujemy go tylko w podglądzie
+                        if (lastResult.isFinal) {
+                            this.currentSessionFinal = transcript;
+                            this.currentTranscript = transcript;
+                        } else {
+                            this.currentTranscript = transcript;
                         }
-                        
-                        this.currentSessionFinal = finalForThisSession;
-                        
-                        // Łączenie
-                        let rawFullText = (this.sessionTranscriptBuffer + ' ' + finalForThisSession + ' ' + interim);
-                        
-                        // Zaawansowana normalizacja i deduplikacja powtórzeń (dla "test test test")
-                        this.currentTranscript = this.cleanText(rawFullText);
                     };
 
                     this.recognition.onerror = (event) => {
                         console.error('Błąd Speech API:', event.error);
                         if (event.error === 'no-speech') return; 
-                        
                         if (event.error === 'network') {
                             // ignoruj, onend obsłuży restart
                         } else {
@@ -442,29 +429,37 @@
                     this.recognition.onend = () => {
                         console.log('Nagrywanie zakończone (event)');
                         
-                        // Zatwierdź wynik tej sesji
-                        this.sessionTranscriptBuffer += this.currentSessionFinal;
-                        // Oczyść buffer z ewentualnych duplikatów po zatwierdzeniu
-                        this.sessionTranscriptBuffer = this.cleanText(this.sessionTranscriptBuffer) + ' ';
+                        const newFinal = this.currentSessionFinal.trim();
+                        
+                        // Zabezpieczenie przed duplikatami przy auto-restart (Android glitch)
+                        // Jeśli nowy tekst jest taki sam jak koniec starego bufora, prawdopodobnie to powtórka
+                        // Lub jeśli jest identyczny z ostatnim zapisanym w bufferze
+                        const bufferEnd = this.sessionTranscriptBuffer.trim().slice(-newFinal.length);
+                        
+                        if (newFinal && newFinal !== bufferEnd) {
+                            // Jeśli tekst jest różny, dodajemy do głównego bufora
+                            // Używamy cleanText aby upewnić się, że nie ma drobnych artefaktów
+                            const cleanedNew = this.cleanText(newFinal);
+                            if (cleanedNew) {
+                                this.sessionTranscriptBuffer += (this.sessionTranscriptBuffer ? ' ' : '') + cleanedNew + ' ';
+                            }
+                        }
                         
                         this.currentSessionFinal = '';
+                        this.currentTranscript = '';
 
                         // LOGIKA AUTO-RESTARTU
                         if (!this.manualStop && this.isRecording) {
                             console.log('Auto-restart nagrywania...');
-                            // Krótkie opóźnienie dla stabilności
                             setTimeout(() => {
                                 if(!this.manualStop) this.startRecordingLoop();
                             }, 100);
                         } else {
                             this.isRecording = false;
-                            
                             const finalToSave = this.sessionTranscriptBuffer.trim();
                             if (finalToSave) {
                                 this.saveNote(finalToSave);
                             }
-                            
-                            this.currentTranscript = '';
                             this.sessionTranscriptBuffer = '';
                         }
                     };
@@ -480,14 +475,10 @@
                     if (!text) return '';
                     // 1. Usuń wielokrotne spacje
                     let clean = text.replace(/\s+/g, ' ').trim();
-                    // 2. Usuń proste powtórzenia słów (np. "test test" -> "test")
-                    // Regex łapie powtórzone słowo (co najmniej 3 litery) oddzielone spacją
-                    // Używamy pętli, aby usunąć wielokrotne powtórzenia (test test test -> test)
-                    let prev;
-                    do {
-                        prev = clean;
-                        clean = clean.replace(/(\b\w{3,}\b)( \1\b)+/gi, '$1');
-                    } while (clean !== prev);
+                    
+                    // 2. Usuń powtórzenia słów (np. "test test" -> "test")
+                    // Regex: łapie słowo (min 3 litery) powtórzone bezpośrednio po sobie
+                    clean = clean.replace(/(\b\w{3,}\b)( \1\b)+/gi, '$1');
                     
                     return clean;
                 },
@@ -496,12 +487,10 @@
                     if (!this.SpeechRecognition) return;
 
                     if (this.isRecording) {
-                        // STOP
                         this.manualStop = true; 
                         if (this.recognition) this.recognition.stop();
                         this.isRecording = false;
                     } else {
-                        // START
                         this.manualStop = false;
                         this.sessionTranscriptBuffer = ''; 
                         this.currentSessionFinal = '';
@@ -510,7 +499,6 @@
                     }
                 },
 
-                // --- Pomocnicze ---
                 formatTime(dateObj) {
                     if (!dateObj) return '';
                     return new Date(dateObj).toLocaleTimeString('pl-PL', { 
