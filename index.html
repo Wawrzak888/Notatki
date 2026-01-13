@@ -326,6 +326,8 @@
                 
                 wakeLock: null,
                 reminderCheckInterval: null,
+                inAppNotification: null,
+                inAppNotificationTimeout: null,
 
                 async init() {
                     console.log('🚀 Inicjalizacja Voice Brain v3 (z przypomnieniami)...');
@@ -525,12 +527,20 @@
                         await this.loadNotes();
                         
                         if (reminderInfo.hasReminder) {
-                            console.log('🎉 Pokazuję powiadomienie o przypomnieniu');
-                            this.showNotification('Przypomnienie ustawione!', 
-                                `Przypomnę Ci: ${this.formatReminderTime(reminderInfo.reminderDate)}`);
+                            console.log('🎉 Przypomnienie ustawione na:', reminderInfo.reminderDate);
+                            // Tylko wibracje, bez ryzykownego Notification
+                            if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+                            
+                            // Próbuj pokazać powiadomienie, ale nie blokuj zapisu jeśli się nie uda
+                            try {
+                                this.showNotification('Przypomnienie ustawione!', 
+                                    `Przypomnę Ci: ${this.formatReminderTime(reminderInfo.reminderDate)}`);
+                            } catch (notifError) {
+                                console.log('ℹ️ Nie udało się pokazać powiadomienia (to OK)');
+                            }
+                        } else {
+                            if (navigator.vibrate) navigator.vibrate(50);
                         }
-                        
-                        if (navigator.vibrate) navigator.vibrate(50);
                     } catch (e) {
                         console.error('❌ Błąd zapisu - szczegóły:', e);
                         console.error('❌ Stack trace:', e.stack);
@@ -617,35 +627,102 @@
                 },
 
                 showNotification(title, body) {
-                    if (Notification.permission === "granted") {
-                        new Notification(title, {
+                    if (!("Notification" in window)) {
+                        console.log('❌ Przeglądarka nie wspiera powiadomień');
+                        this.showInAppNotification(title, body);
+                        return;
+                    }
+
+                    if (Notification.permission !== "granted") {
+                        console.log('❌ Brak uprawnień do powiadomień');
+                        this.showInAppNotification(title, body);
+                        return;
+                    }
+
+                    try {
+                        const notification = new Notification(title, {
                             body: body,
                             icon: 'https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6/svgs/solid/bell.svg',
                             badge: 'https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6/svgs/solid/microphone.svg',
-                            vibrate: [200, 100, 200]
+                            vibrate: [200, 100, 200],
+                            tag: 'voice-brain-reminder',
+                            requireInteraction: false
                         });
+                        
+                        notification.onclick = () => {
+                            window.focus();
+                            notification.close();
+                        };
+                        
+                        console.log('✅ Powiadomienie wysłane:', title);
+                    } catch (e) {
+                        console.error('❌ Błąd tworzenia powiadomienia:', e);
+                        // Fallback - alert wizualny w aplikacji
+                        this.showInAppNotification(title, body);
+                        if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
                     }
                 },
 
+                showInAppNotification(title, body) {
+                    this.inAppNotification = { title, body };
+                    
+                    if (this.inAppNotificationTimeout) {
+                        clearTimeout(this.inAppNotificationTimeout);
+                    }
+                    
+                    this.inAppNotificationTimeout = setTimeout(() => {
+                        this.inAppNotification = null;
+                    }, 5000);
+                },
+
                 startReminderCheck() {
-                    this.reminderCheckInterval = setInterval(async () => {
-                        const now = new Date();
-                        const reminders = this.notes.filter(note => 
-                            note.hasReminder && 
-                            !note.reminderCompleted && 
-                            new Date(note.reminderDate) <= now
-                        );
+                    console.log('⏰ Uruchamiam sprawdzanie przypomnień co 10 sekund');
+                    
+                    // Sprawdź natychmiast przy starcie
+                    this.checkReminders();
+                    
+                    // Potem sprawdzaj co 10 sekund
+                    this.reminderCheckInterval = setInterval(() => {
+                        this.checkReminders();
+                    }, 10000); // 10 sekund
+                },
 
-                        for (const reminder of reminders) {
-                            this.showNotification('⏰ Przypomnienie!', reminder.title);
-                            await db.notes.update(reminder.id, { reminderCompleted: true });
-                            if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 200]);
+                async checkReminders() {
+                    const now = new Date();
+                    console.log(`🔍 Sprawdzam przypomnienia o ${now.toLocaleTimeString()}`);
+                    
+                    const reminders = this.notes.filter(note => {
+                        if (!note.hasReminder || note.reminderCompleted) return false;
+                        
+                        const reminderDate = new Date(note.reminderDate);
+                        const isPast = reminderDate <= now;
+                        
+                        if (isPast) {
+                            console.log('⏰ PRZYPOMNIENIE!', note.title, 'na', reminderDate);
                         }
+                        
+                        return isPast;
+                    });
 
-                        if (reminders.length > 0) {
-                            await this.loadNotes();
-                        }
-                    }, 30000); // Sprawdzaj co 30 sekund
+                    console.log(`📋 Znaleziono ${reminders.length} przypomnień do wykonania`);
+
+                    for (const reminder of reminders) {
+                        console.log('🔔 Wykonuję przypomnienie:', reminder.title);
+                        
+                        // Wibracje (zawsze działają)
+                        if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 200]);
+                        
+                        // Pokaż powiadomienie (z automatycznym fallbackiem do in-app)
+                        this.showNotification('⏰ Przypomnienie!', reminder.title);
+                        
+                        // Oznacz jako wykonane
+                        await db.notes.update(reminder.id, { reminderCompleted: true });
+                        console.log('✅ Przypomnienie oznaczone jako wykonane');
+                    }
+
+                    if (reminders.length > 0) {
+                        await this.loadNotes();
+                    }
                 },
 
                 async requestWakeLock() {
