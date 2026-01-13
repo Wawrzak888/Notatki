@@ -38,9 +38,9 @@
 
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://unpkg.com/dexie@3.2.4/dist/dexie.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js"></script>
-
+    
     <style>
+        [x-cloak] { display: none !important; }
         ::-webkit-scrollbar { width: 0px; background: transparent; }
         body { -webkit-tap-highlight-color: transparent; }
         textarea { field-sizing: content; min-height: 3rem; }
@@ -67,8 +67,327 @@
             50% { box-shadow: 0 0 20px rgba(251, 191, 36, 0.8); }
         }
     </style>
+
+    <script>
+        // Deklaracja zmiennych globalnych
+        let audioCtx;
+        const db = new Dexie('VoiceBrainDB');
+        db.version(3).stores({ 
+            notes: '++id, date, text, title, hasReminder, reminderDate, reminderCompleted' 
+        });
+
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+        }
+
+        function playReminderSound() {
+            initAudio();
+            const playTone = (freq, startTime, duration, volume = 0.3) => {
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(freq, startTime);
+                gain.gain.setValueAtTime(0, startTime);
+                gain.gain.linearRampToValueAtTime(volume, startTime + 0.05);
+                gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start(startTime);
+                osc.stop(startTime + duration);
+            };
+            const now = audioCtx.currentTime;
+            playTone(880, now + 0.0, 0.4);
+            playTone(659, now + 0.2, 0.4);
+            playTone(880, now + 0.6, 0.4);
+            playTone(659, now + 0.8, 0.4);
+            playTone(1046, now + 1.2, 0.8, 0.2);
+            if (navigator.vibrate) navigator.vibrate([400, 200, 400, 200, 400]);
+        }
+
+        function playBeep(type) {
+            initAudio();
+            const oscillator = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            oscillator.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            if (type === 'start') {
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(440, audioCtx.currentTime); 
+                oscillator.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.1); 
+                gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+            } else {
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(880, audioCtx.currentTime);
+                oscillator.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.1); 
+                gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+            }
+            oscillator.start();
+            oscillator.stop(audioCtx.currentTime + 0.1);
+        }
+
+        // Rejestracja logiki Alpine.js przed załadowaniem biblioteki
+        document.addEventListener('alpine:init', () => {
+            Alpine.data('voiceJournal', () => ({
+                notes: [],
+                searchQuery: '',
+                isRecording: false,
+                manualStop: false, 
+                currentTranscript: '',
+                sessionTranscriptBuffer: '',
+                currentSessionFinal: '',
+                isLoading: true,
+                errorMsg: null,
+                detectedReminder: false,
+                showReminders: false,
+                editingNoteId: null,
+                editingText: '',
+                inAppNotification: null,
+                inAppNotificationTimeout: null,
+
+                async init() {
+                    try {
+                        await db.open();
+                    } catch (e) {
+                        this.errorMsg = `Błąd DB: ${e.message}`;
+                    }
+                    await this.loadNotes();
+                    this.setupSpeechRecognition();
+                    this.startReminderCheck();
+                },
+
+                async loadNotes() {
+                    try {
+                        const data = await db.notes.toArray();
+                        this.notes = data.sort((a, b) => b.date - a.date);
+                    } catch (e) {
+                        this.errorMsg = 'Nie udało się załadować notatek.';
+                    } finally {
+                        this.isLoading = false;
+                    }
+                },
+
+                get filteredNotes() {
+                    if (!this.searchQuery) return this.notes;
+                    const q = this.searchQuery.toLowerCase();
+                    return this.notes.filter(n => (n.title?.toLowerCase().includes(q)) || (n.text?.toLowerCase().includes(q)));
+                },
+
+                get groupedNotes() {
+                    const groups = {};
+                    const today = new Date().toDateString();
+                    const yesterday = new Date(new Date().setDate(new Date().getDate() - 1)).toDateString();
+                    this.filteredNotes.forEach(note => {
+                        const d = new Date(note.date).toDateString();
+                        let title = d;
+                        if (d === today) title = 'Dzisiaj';
+                        else if (d === yesterday) title = 'Wczoraj';
+                        else title = new Date(note.date).toLocaleDateString('pl-PL', { weekday: 'long', day: 'numeric', month: 'long' });
+                        if (!groups[title]) groups[title] = { title, notes: [] };
+                        groups[title].notes.push(note);
+                    });
+                    return Object.values(groups); 
+                },
+
+                get upcomingReminders() {
+                    const now = new Date();
+                    return this.notes
+                        .filter(n => n.hasReminder && !n.reminderCompleted && new Date(n.reminderDate) > now)
+                        .sort((a, b) => new Date(a.reminderDate) - new Date(b.reminderDate))
+                        .slice(0, 10);
+                },
+
+                get activeRemindersCount() {
+                    return this.upcomingReminders.length;
+                },
+
+                parseReminderFromText(text) {
+                    const lowerText = text.toLowerCase();
+                    const patterns = [
+                        { regex: /przypomnij\s+mi\s+(jutro|dzisiaj|dziś)\s+(o\s+)?(\d{1,2})(:\d{2})?/i, type: 'specific' },
+                        { regex: /przypomnij\s+(jutro|dzisiaj|dziś)\s+(o\s+)?(\d{1,2})(:\d{2})?/i, type: 'specific' },
+                        { regex: /za\s+(\d+)\s+(godzin|godzinę|godziny|minut|minutę|minuty|dni|dzień)/i, type: 'relative' },
+                        { regex: /(jutro|dzisiaj|dziś)\s+rano/i, type: 'morning' },
+                        { regex: /(jutro|dzisiaj|dziś)\s+wieczorem/i, type: 'evening' },
+                    ];
+                    for (const pattern of patterns) {
+                        const m = lowerText.match(pattern.regex);
+                        if (m) {
+                            const d = this.calculateReminderDate(m, pattern.type);
+                            if (d) return { hasReminder: true, reminderDate: d, cleanedText: text.replace(m[0], '').trim() || text };
+                        }
+                    }
+                    return { hasReminder: false, cleanedText: text };
+                },
+
+                calculateReminderDate(match, type) {
+                    const now = new Date();
+                    let d = new Date();
+                    if (type === 'specific') {
+                        if (match[1] === 'jutro') d.setDate(d.getDate() + 1);
+                        d.setHours(parseInt(match[3]), match[4] ? parseInt(match[4].substring(1)) : 0, 0, 0);
+                    } else if (type === 'relative') {
+                        const val = parseInt(match[1]);
+                        const unit = match[2];
+                        if (unit.includes('godzin')) d.setHours(d.getHours() + val);
+                        else if (unit.includes('minut')) d.setMinutes(d.getMinutes() + val);
+                        else if (unit.includes('dni') || unit.includes('dzień')) d.setDate(d.getDate() + val);
+                    } else if (type === 'morning') {
+                        if (match[1] === 'jutro') d.setDate(d.getDate() + 1);
+                        d.setHours(9, 0, 0, 0);
+                    } else if (type === 'evening') {
+                        if (match[1] === 'jutro') d.setDate(d.getDate() + 1);
+                        d.setHours(18, 0, 0, 0);
+                    }
+                    return d > now ? d : null;
+                },
+
+                generateAutoTitle(text) {
+                    if (!text) return 'Nowa notatka';
+                    const words = text.trim().split(/\s+/).slice(0, 4);
+                    let t = words.join(' ');
+                    t = t.charAt(0).toUpperCase() + t.slice(1);
+                    return words.length >= 4 ? t + '...' : t;
+                },
+
+                async saveNote(text) {
+                    if (!text?.trim()) return;
+                    const reminder = this.parseReminderFromText(text);
+                    const noteData = {
+                        text: reminder.cleanedText.trim(),
+                        title: this.generateAutoTitle(reminder.cleanedText),
+                        date: new Date(),
+                        hasReminder: reminder.hasReminder,
+                        reminderDate: reminder.reminderDate,
+                        reminderCompleted: false
+                    };
+                    await db.notes.add(noteData);
+                    await this.loadNotes();
+                    if (reminder.hasReminder) {
+                        this.showInAppNotification("Zapisano", `Przypomnienie na ${this.formatReminderTime(reminder.reminderDate)}`);
+                    }
+                },
+
+                async deleteNote(id) {
+                    if (confirm('Usunąć?')) { await db.notes.delete(id); await this.loadNotes(); }
+                },
+
+                async deleteReminder(id) {
+                    await db.notes.update(id, { hasReminder: false, reminderCompleted: true });
+                    await this.loadNotes();
+                },
+
+                startEditing(note) { this.editingNoteId = note.id; this.editingText = note.text; },
+                cancelEditing() { this.editingNoteId = null; },
+                async saveEdit(id) {
+                    await db.notes.update(id, { text: this.editingText, title: this.generateAutoTitle(this.editingText) });
+                    await this.loadNotes();
+                    this.editingNoteId = null;
+                },
+
+                showInAppNotification(title, body) {
+                    this.inAppNotification = { title, body };
+                    if (this.inAppNotificationTimeout) clearTimeout(this.inAppNotificationTimeout);
+                    this.inAppNotificationTimeout = setTimeout(() => this.inAppNotification = null, 5000);
+                },
+
+                startReminderCheck() {
+                    this.checkReminders();
+                    setInterval(() => this.checkReminders(), 10000);
+                },
+
+                async checkReminders() {
+                    const now = new Date();
+                    const due = this.notes.filter(n => n.hasReminder && !n.reminderCompleted && new Date(n.reminderDate) <= now);
+                    for (const r of due) {
+                        playReminderSound();
+                        this.showInAppNotification("⏰ Przypomnienie!", r.title);
+                        await db.notes.update(r.id, { reminderCompleted: true });
+                    }
+                    if (due.length > 0) await this.loadNotes();
+                },
+
+                async requestNotificationPermission() {
+                    if ("Notification" in window) {
+                        const p = await Notification.requestPermission();
+                        this.showInAppNotification("Powiadomienia", p === "granted" ? "Włączone" : "Zablokowane");
+                    }
+                },
+
+                async exportBackup() {
+                    const data = await db.notes.toArray();
+                    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = `voice-brain-backup-${new Date().toISOString().slice(0,10)}.json`;
+                    a.click();
+                },
+
+                setupSpeechRecognition() {
+                    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+                    if (!SR) this.errorMsg = 'Brak wsparcia mowy.';
+                    else this.SRClass = SR;
+                },
+
+                startRecordingLoop() {
+                    if (!this.SRClass) return;
+                    this.recognition = new this.SRClass();
+                    this.recognition.continuous = true;
+                    this.recognition.interimResults = true;
+                    this.recognition.lang = 'pl-PL';
+                    this.recognition.onstart = () => { this.isRecording = true; playBeep('start'); };
+                    this.recognition.onresult = (e) => {
+                        const last = e.results[e.results.length - 1];
+                        this.currentTranscript = last[0].transcript;
+                        if (last.isFinal) {
+                            this.currentSessionFinal = last[0].transcript;
+                            if (this.parseReminderFromText(last[0].transcript).hasReminder) this.detectedReminder = true;
+                        }
+                    };
+                    this.recognition.onend = () => {
+                        if (this.currentSessionFinal.trim()) this.sessionTranscriptBuffer += (this.sessionTranscriptBuffer ? ' ' : '') + this.currentSessionFinal.trim();
+                        if (!this.manualStop && this.isRecording) setTimeout(() => this.startRecordingLoop(), 100);
+                        else {
+                            this.isRecording = false;
+                            playBeep('stop');
+                            if (this.sessionTranscriptBuffer) this.saveNote(this.sessionTranscriptBuffer);
+                            this.sessionTranscriptBuffer = '';
+                        }
+                    };
+                    this.recognition.start();
+                },
+
+                toggleRecording() {
+                    initAudio();
+                    if (this.isRecording) { this.manualStop = true; this.recognition?.stop(); }
+                    else { this.manualStop = false; this.sessionTranscriptBuffer = ''; this.currentTranscript = ''; this.detectedReminder = false; this.startRecordingLoop(); }
+                },
+
+                formatTime(d) { return new Date(d).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }); },
+                formatReminderTime(d) {
+                    const date = new Date(d);
+                    const isToday = date.toDateString() === new Date().toDateString();
+                    const day = isToday ? 'Dzisiaj' : date.toLocaleDateString('pl-PL', { day: 'numeric', month: 'short' });
+                    return `${day} o ${date.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })}`;
+                },
+                formatReminderBadge(d) {
+                    const diff = Math.floor((new Date(d) - new Date()) / 60000);
+                    return diff < 60 ? `${diff}m` : `${Math.floor(diff/60)}h`;
+                }
+            }));
+        });
+    </script>
+    
+    <!-- Alpine.js ładowany na końcu nagłówka z atrybutem defer -->
+    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js"></script>
 </head>
-<body class="bg-slate-900 text-white font-sans antialiased min-h-screen flex flex-col relative" x-data="voiceJournal()">
+<body class="bg-slate-900 text-white font-sans antialiased min-h-screen flex flex-col relative" x-data="voiceJournal()" x-cloak>
 
     <header class="sticky top-0 z-50 bg-slate-900/95 backdrop-blur-sm p-4 border-b border-slate-800 shadow-md">
         <div class="max-w-md mx-auto">
@@ -79,13 +398,11 @@
                 </h1>
                 
                 <div class="flex items-center space-x-2">
-                    <!-- Przycisk Przypomnienia -->
                     <button @click="showReminders = !showReminders" class="relative text-slate-400 hover:text-amber-400 transition-colors p-2">
                         <i class="fas fa-bell"></i>
                         <span x-show="activeRemindersCount > 0" class="absolute -top-1 -right-1 bg-amber-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center" x-text="activeRemindersCount"></span>
                     </button>
                     
-                    <!-- Przycisk Opcji -->
                     <div class="relative" x-data="{ open: false }">
                         <button @click="open = !open" class="text-slate-400 hover:text-white transition-colors p-2">
                             <i class="fas fa-cog"></i>
@@ -93,7 +410,10 @@
                         <div x-show="open" 
                              @click.outside="open = false"
                              x-transition.origin.top.right
-                             class="absolute right-0 top-full mt-2 w-48 bg-slate-800 rounded-lg shadow-xl border border-slate-700 z-50 overflow-hidden">
+                             class="absolute right-0 top-full mt-2 w-52 bg-slate-800 rounded-lg shadow-xl border border-slate-700 z-50 overflow-hidden">
+                            <button @click="playReminderSound(); open = false" class="w-full text-left px-4 py-3 text-sm text-amber-300 hover:bg-slate-700 transition-colors flex items-center">
+                                <i class="fas fa-volume-up mr-2 w-5"></i> Przetestuj dźwięk
+                            </button>
                             <button @click="requestNotificationPermission(); open = false" class="w-full text-left px-4 py-3 text-sm text-slate-300 hover:bg-slate-700 hover:text-white transition-colors flex items-center">
                                 <i class="fas fa-bell mr-2 w-5"></i> Powiadomienia
                             </button>
@@ -117,7 +437,26 @@
         </div>
     </header>
 
-    <!-- Panel Przypomnień -->
+    <!-- Powiadomienie w aplikacji -->
+    <div x-show="inAppNotification" 
+         x-transition:enter="transition ease-out duration-300"
+         x-transition:enter-start="opacity-0 translate-y-[-20px]"
+         x-transition:enter-end="opacity-100 translate-y-0"
+         x-transition:leave="transition ease-in duration-200"
+         x-transition:leave-start="opacity-100 translate-y-0"
+         x-transition:leave-end="opacity-0 translate-y-[-20px]"
+         class="fixed top-20 left-1/2 transform -translate-x-1/2 z-[100] w-[90%] max-w-sm">
+        <div class="bg-indigo-600 text-white p-4 rounded-xl shadow-2xl border border-indigo-400 flex items-center">
+            <div class="mr-3 bg-white/20 p-2 rounded-full">
+                <i class="fas fa-info-circle"></i>
+            </div>
+            <div>
+                <p class="font-bold text-sm" x-text="inAppNotification?.title"></p>
+                <p class="text-xs opacity-90" x-text="inAppNotification?.body"></p>
+            </div>
+        </div>
+    </div>
+
     <div x-show="showReminders" 
          x-transition:enter="transition ease-out duration-300"
          x-transition:enter-start="opacity-0 -translate-y-10"
@@ -157,7 +496,6 @@
     </div>
 
     <main class="max-w-md mx-auto p-4 space-y-6 flex-grow pb-36 w-full">
-        
         <template x-if="isLoading">
             <div class="text-center text-slate-500 mt-10">
                 <i class="fas fa-spinner fa-spin fa-2x mb-2"></i>
@@ -184,7 +522,6 @@
                     <div class="bg-slate-800 rounded-xl p-5 shadow-lg relative group transition-all hover:bg-slate-750 border border-slate-700/50"
                          :class="note.hasReminder && !note.reminderCompleted ? 'ring-2 ring-amber-500/30' : ''">
                         
-                        <!-- Reminder Badge -->
                         <div x-show="note.hasReminder && !note.reminderCompleted" class="absolute -top-2 -right-2 bg-amber-500 text-white text-xs px-2 py-1 rounded-full flex items-center space-x-1 reminder-badge">
                             <i class="fas fa-bell text-xs"></i>
                             <span x-text="formatReminderBadge(note.reminderDate)"></span>
@@ -224,10 +561,11 @@
     </main>
 
     <footer class="text-center py-6 text-slate-600 text-xs z-10 bg-slate-900 w-full">
-        <span>Wykonanie Tomasz Wawrzak 2026 z asystą AI Claude</span>
+        <span>Wykonanie Tomasz Wawrzak 2026 z asystą AI Gemini</span>
     </footer>
 
-    <div x-show="isRecording" style="display: none;"
+    <!-- Overlay Nagrywania -->
+    <div x-show="isRecording"
          x-transition:enter="transition ease-out duration-300"
          x-transition:enter-start="opacity-0 translate-y-10"
          x-transition:enter-end="opacity-100 translate-y-0"
@@ -246,6 +584,7 @@
         </div>
     </div>
 
+    <!-- Główny Przycisk Mikrofonu -->
     <div class="fixed bottom-20 left-0 right-0 flex justify-center z-50 pointer-events-none">
         <button 
             @click="toggleRecording()" 
@@ -256,7 +595,8 @@
         </button>
     </div>
 
-    <div x-show="errorMsg" style="display: none;" class="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" x-transition.opacity>
+    <!-- Modal Błędu -->
+    <div x-show="errorMsg" class="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" x-transition.opacity>
         <div class="bg-slate-800 rounded-2xl p-6 max-w-sm w-full text-center border border-red-500/30 shadow-2xl">
             <div class="w-12 h-12 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-4"><i class="fas fa-exclamation-triangle text-red-500 text-xl"></i></div>
             <h3 class="text-lg font-bold text-white mb-2">Wystąpił błąd</h3>
@@ -264,698 +604,5 @@
             <button @click="errorMsg = null" class="bg-slate-700 hover:bg-slate-600 text-white px-6 py-2 rounded-full w-full transition-colors">Rozumiem</button>
         </div>
     </div>
-
-    <script>
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        
-        function playBeep(type) {
-            if (audioCtx.state === 'suspended') audioCtx.resume();
-            const oscillator = audioCtx.createOscillator();
-            const gainNode = audioCtx.createGain();
-            
-            oscillator.connect(gainNode);
-            gainNode.connect(audioCtx.destination);
-            
-            if (type === 'start') {
-                oscillator.type = 'sine';
-                oscillator.frequency.setValueAtTime(440, audioCtx.currentTime); 
-                oscillator.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.1); 
-                gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
-                gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
-                oscillator.start();
-                oscillator.stop(audioCtx.currentTime + 0.1);
-            } else {
-                oscillator.type = 'sine';
-                oscillator.frequency.setValueAtTime(880, audioCtx.currentTime);
-                oscillator.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.1); 
-                gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
-                gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
-                oscillator.start();
-                oscillator.stop(audioCtx.currentTime + 0.1);
-            }
-        }
-
-        const db = new Dexie('VoiceBrainDB');
-        db.version(1).stores({ notes: '++id, date, text' });
-        db.version(2).stores({ notes: '++id, date, text, title' });
-        db.version(3).stores({ notes: '++id, date, text, title, hasReminder, reminderDate, reminderCompleted' }).upgrade(tx => {
-            return tx.table('notes').toCollection().modify(note => {
-                note.hasReminder = note.hasReminder || false;
-                note.reminderDate = note.reminderDate || null;
-                note.reminderCompleted = note.reminderCompleted || false;
-            });
-        });
-
-        document.addEventListener('alpine:init', () => {
-            Alpine.data('voiceJournal', () => ({
-                notes: [],
-                searchQuery: '',
-                isRecording: false,
-                manualStop: false, 
-                currentTranscript: '',
-                sessionTranscriptBuffer: '',
-                currentSessionFinal: '',
-                recognition: null,
-                isLoading: true,
-                errorMsg: null,
-                detectedReminder: false,
-                showReminders: false,
-                
-                editingNoteId: null,
-                editingText: '',
-                
-                wakeLock: null,
-                reminderCheckInterval: null,
-                inAppNotification: null,
-                inAppNotificationTimeout: null,
-
-                async init() {
-                    console.log('🚀 Inicjalizacja Voice Brain v3 (z przypomnieniami)...');
-                    
-                    try {
-                        // Testowe otwarcie bazy danych
-                        await db.open();
-                        console.log('✅ Baza danych otwarta pomyślnie');
-                        console.log('📊 Wersja bazy:', db.verno);
-                    } catch (e) {
-                        console.error('❌ Błąd otwierania bazy danych:', e);
-                        this.errorMsg = `Błąd bazy danych: ${e.message}`;
-                    }
-                    
-                    await this.loadNotes();
-                    this.setupSpeechRecognition();
-                    this.startReminderCheck();
-                    await this.requestNotificationPermission();
-                },
-
-                async loadNotes() {
-                    try {
-                        this.notes = (await db.notes.toArray()).sort((a, b) => b.date - a.date);
-                    } catch (e) {
-                        console.error('Błąd DB:', e);
-                        this.errorMsg = 'Nie udało się załadować notatek.';
-                    } finally {
-                        this.isLoading = false;
-                    }
-                },
-
-                get filteredNotes() {
-                    if (!this.searchQuery) return this.notes;
-                    const lowerQuery = this.searchQuery.toLowerCase();
-                    return this.notes.filter(note => 
-                        (note.title && note.title.toLowerCase().includes(lowerQuery)) ||
-                        (note.text && note.text.toLowerCase().includes(lowerQuery))
-                    );
-                },
-
-                get groupedNotes() {
-                    const groups = {};
-                    const today = new Date().toDateString();
-                    const yesterday = new Date(new Date().setDate(new Date().getDate() - 1)).toDateString();
-
-                    this.filteredNotes.forEach(note => {
-                        const noteDate = new Date(note.date).toDateString();
-                        let groupTitle = noteDate;
-                        if (noteDate === today) groupTitle = 'Dzisiaj';
-                        else if (noteDate === yesterday) groupTitle = 'Wczoraj';
-                        else groupTitle = new Date(note.date).toLocaleDateString('pl-PL', { weekday: 'long', day: 'numeric', month: 'long' });
-
-                        if (!groups[groupTitle]) {
-                            groups[groupTitle] = { title: groupTitle, notes: [] };
-                        }
-                        groups[groupTitle].notes.push(note);
-                    });
-                    return Object.values(groups); 
-                },
-
-                get upcomingReminders() {
-                    const now = new Date();
-                    return this.notes
-                        .filter(note => note.hasReminder && !note.reminderCompleted && new Date(note.reminderDate) > now)
-                        .sort((a, b) => new Date(a.reminderDate) - new Date(b.reminderDate))
-                        .slice(0, 10);
-                },
-
-                get activeRemindersCount() {
-                    return this.upcomingReminders.length;
-                },
-
-                parseReminderFromText(text) {
-                    console.log('🔍 Parsowanie tekstu na przypomnienie:', text);
-                    const lowerText = text.toLowerCase();
-                    
-                    const patterns = [
-                        { regex: /przypomnij\s+mi\s+(jutro|dzisiaj|dziś)\s+(o\s+)?(\d{1,2})(:\d{2})?/i, type: 'specific' },
-                        { regex: /przypomnij\s+(jutro|dzisiaj|dziś)\s+(o\s+)?(\d{1,2})(:\d{2})?/i, type: 'specific' },
-                        { regex: /dodaj\s+do\s+kalendarza\s+(jutro|dzisiaj|dziś)\s+(o\s+)?(\d{1,2})(:\d{2})?/i, type: 'calendar' },
-                        { regex: /za\s+(\d+)\s+(godzin|godzinę|godziny|minut|minutę|minuty|dni|dzień)/i, type: 'relative' },
-                        { regex: /(jutro|dzisiaj|dziś)\s+rano/i, type: 'morning' },
-                        { regex: /(jutro|dzisiaj|dziś)\s+wieczorem/i, type: 'evening' },
-                    ];
-
-                    for (const pattern of patterns) {
-                        const match = lowerText.match(pattern.regex);
-                        if (match) {
-                            console.log('✅ Znaleziono wzorzec:', pattern.type, 'Match:', match);
-                            const reminderDate = this.calculateReminderDate(match, pattern.type);
-                            console.log('📅 Wyliczona data przypomnienia:', reminderDate);
-                            
-                            if (reminderDate) {
-                                const cleanedText = text.replace(match[0], '').trim();
-                                return { 
-                                    hasReminder: true, 
-                                    reminderDate: reminderDate,
-                                    cleanedText: cleanedText || text
-                                };
-                            }
-                        }
-                    }
-                    
-                    console.log('❌ Nie znaleziono wzorca przypomnienia');
-                    return { hasReminder: false, cleanedText: text };
-                },
-
-                calculateReminderDate(match, type) {
-                    const now = new Date();
-                    let reminderDate = new Date();
-
-                    if (type === 'specific') {
-                        const day = match[1];
-                        const hour = parseInt(match[3]);
-                        const minutes = match[4] ? parseInt(match[4].substring(1)) : 0;
-                        
-                        if (day === 'jutro') {
-                            reminderDate.setDate(reminderDate.getDate() + 1);
-                        }
-                        reminderDate.setHours(hour, minutes, 0, 0);
-                        
-                    } else if (type === 'calendar') {
-                        const day = match[1];
-                        const hour = parseInt(match[3]);
-                        const minutes = match[4] ? parseInt(match[4].substring(1)) : 0;
-                        
-                        if (day === 'jutro') {
-                            reminderDate.setDate(reminderDate.getDate() + 1);
-                        }
-                        reminderDate.setHours(hour, minutes, 0, 0);
-                        
-                    } else if (type === 'relative') {
-                        const value = parseInt(match[1]);
-                        const unit = match[2];
-                        
-                        if (unit.includes('godzin')) {
-                            reminderDate.setHours(reminderDate.getHours() + value);
-                        } else if (unit.includes('minut')) {
-                            reminderDate.setMinutes(reminderDate.getMinutes() + value);
-                        } else if (unit.includes('dni') || unit.includes('dzień')) {
-                            reminderDate.setDate(reminderDate.getDate() + value);
-                        }
-                        
-                    } else if (type === 'morning') {
-                        const day = match[1];
-                        if (day === 'jutro') {
-                            reminderDate.setDate(reminderDate.getDate() + 1);
-                        }
-                        reminderDate.setHours(9, 0, 0, 0);
-                        
-                    } else if (type === 'evening') {
-                        const day = match[1];
-                        if (day === 'jutro') {
-                            reminderDate.setDate(reminderDate.getDate() + 1);
-                        }
-                        reminderDate.setHours(18, 0, 0, 0);
-                    }
-
-                    return reminderDate > now ? reminderDate : null;
-                },
-
-                generateAutoTitle(text) {
-                    if (!text || text.trim().length === 0) return 'Nowa notatka';
-                    const cleanText = text.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g,"");
-                    const words = cleanText.trim().split(/\s+/);
-                    const titleWords = words.slice(0, 4);
-                    let title = titleWords.join(' ');
-                    title = title.charAt(0).toUpperCase() + title.slice(1);
-                    if (words.length > 4) title += '...';
-                    return title;
-                },
-
-                async saveNote(text) {
-                    if (!text || text.trim().length === 0) return;
-                    try {
-                        console.log('📝 Zapisuję notatkę:', text);
-                        const reminderInfo = this.parseReminderFromText(text);
-                        console.log('🔔 Wynik parsowania przypomnienia:', reminderInfo);
-                        
-                        const finalText = reminderInfo.cleanedText;
-                        const title = this.generateAutoTitle(finalText);
-                        
-                        const noteData = {
-                            text: finalText.trim(),
-                            title: title,
-                            date: new Date(),
-                            hasReminder: reminderInfo.hasReminder,
-                            reminderDate: reminderInfo.reminderDate || null,
-                            reminderCompleted: false
-                        };
-                        
-                        console.log('💾 Dane do zapisania:', noteData);
-                        
-                        const savedId = await db.notes.add(noteData);
-                        console.log('✅ Notatka zapisana z ID:', savedId);
-                        
-                        await this.loadNotes();
-                        
-                        if (reminderInfo.hasReminder) {
-                            console.log('🎉 Przypomnienie ustawione na:', reminderInfo.reminderDate);
-                            // Tylko wibracje, bez ryzykownego Notification
-                            if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
-                            
-                            // Próbuj pokazać powiadomienie, ale nie blokuj zapisu jeśli się nie uda
-                            try {
-                                this.showNotification('Przypomnienie ustawione!', 
-                                    `Przypomnę Ci: ${this.formatReminderTime(reminderInfo.reminderDate)}`);
-                            } catch (notifError) {
-                                console.log('ℹ️ Nie udało się pokazać powiadomienia (to OK)');
-                            }
-                        } else {
-                            if (navigator.vibrate) navigator.vibrate(50);
-                        }
-                    } catch (e) {
-                        console.error('❌ Błąd zapisu - szczegóły:', e);
-                        console.error('❌ Stack trace:', e.stack);
-                        this.errorMsg = `Nie udało się zapisać notatki: ${e.message}`;
-                    }
-                },
-
-                async deleteNote(id) {
-                    if (!confirm('Usunąć notatkę?')) return;
-                    try {
-                        await db.notes.delete(id);
-                        await this.loadNotes();
-                    } catch (e) {
-                        console.error('Błąd usuwania:', e);
-                        this.errorMsg = 'Nie udało się usunąć notatki.';
-                    }
-                },
-
-                async deleteReminder(id) {
-                    try {
-                        await db.notes.update(id, { hasReminder: false, reminderCompleted: true });
-                        await this.loadNotes();
-                    } catch (e) {
-                        console.error('Błąd usuwania przypomnienia:', e);
-                    }
-                },
-
-                startEditing(note) {
-                    this.editingNoteId = note.id;
-                    this.editingText = note.text;
-                },
-                
-                cancelEditing() {
-                    this.editingNoteId = null;
-                    this.editingText = '';
-                },
-
-                async saveEdit(id) {
-                    try {
-                        const title = this.generateAutoTitle(this.editingText);
-                        await db.notes.update(id, { text: this.editingText, title: title });
-                        await this.loadNotes();
-                        this.editingNoteId = null;
-                    } catch (e) {
-                        this.errorMsg = 'Błąd aktualizacji notatki';
-                    }
-                },
-
-                async exportBackup() {
-                    try {
-                        const allData = await db.notes.toArray();
-                        const dataStr = JSON.stringify(allData, null, 2);
-                        const blob = new Blob([dataStr], { type: "application/json" });
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = `voice-journal-backup-${new Date().toISOString().slice(0,10)}.json`;
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                        URL.revokeObjectURL(url);
-                    } catch (e) {
-                        this.errorMsg = 'Nie udało się wyeksportować danych.';
-                    }
-                },
-
-                async requestNotificationPermission() {
-                    if (!("Notification" in window)) {
-                        console.log("Przeglądarka nie wspiera powiadomień");
-                        this.showInAppNotification("Info", "Twoja przeglądarka nie wspiera powiadomień systemowych");
-                        return;
-                    }
-
-                    if (Notification.permission === "granted") {
-                        console.log("Powiadomienia już włączone");
-                        this.showInAppNotification("✅ Powiadomienia", "Powiadomienia są już włączone");
-                        return;
-                    }
-
-                    if (Notification.permission !== "denied") {
-                        const permission = await Notification.requestPermission();
-                        if (permission === "granted") {
-                            this.showNotification("Powiadomienia włączone!", "Będę Cię informować o przypomnieniach");
-                        } else {
-                            this.showInAppNotification("Info", "Powiadomienia zablokowane - będę używać wibracji i dźwięku");
-                        }
-                    }
-                },
-
-                playReminderSound() {
-                    console.log('🔊 Wywołano playReminderSound()');
-                    if (audioCtx.state === 'suspended') {
-                        audioCtx.resume();
-                        console.log('🔊 AudioContext wznowiony');
-                    }
-                    
-                    // Powtórz dzwonek 3 razy dla pewności
-                    for (let repeat = 0; repeat < 3; repeat++) {
-                        const offset = repeat * 1.2;
-                        const times = [0, 0.15, 0.3, 0.6, 0.75, 0.9];
-                        const frequencies = [800, 1000, 800, 1000, 800, 1000];
-                        
-                        times.forEach((time, index) => {
-                            const oscillator = audioCtx.createOscillator();
-                            const gainNode = audioCtx.createGain();
-                            
-                            oscillator.connect(gainNode);
-                            gainNode.connect(audioCtx.destination);
-                            
-                            oscillator.type = 'sine';
-                            oscillator.frequency.setValueAtTime(frequencies[index], audioCtx.currentTime + time + offset);
-                            
-                            gainNode.gain.setValueAtTime(0, audioCtx.currentTime + time + offset);
-                            gainNode.gain.linearRampToValueAtTime(0.4, audioCtx.currentTime + time + offset + 0.01);
-                            gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + time + offset + 0.12);
-                            
-                            oscillator.start(audioCtx.currentTime + time + offset);
-                            oscillator.stop(audioCtx.currentTime + time + offset + 0.12);
-                        });
-                    }
-                    
-                    console.log('🔔 Dźwięk przypomnienia odtworzony (3x powtórzenia)');
-                    if (navigator.vibrate) {
-                        navigator.vibrate([300, 100, 300, 100, 300]);
-                    }
-                    this.showInAppNotification("🔊 Test dźwięku", "Tak będzie brzmieć przypomnienie");
-                },
-
-                showNotification(title, body) {
-                    if (!("Notification" in window)) {
-                        console.log('❌ Przeglądarka nie wspiera powiadomień');
-                        this.showInAppNotification(title, body);
-                        return;
-                    }
-
-                    if (Notification.permission !== "granted") {
-                        console.log('❌ Brak uprawnień do powiadomień');
-                        this.showInAppNotification(title, body);
-                        return;
-                    }
-
-                    try {
-                        const notification = new Notification(title, {
-                            body: body,
-                            icon: 'https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6/svgs/solid/bell.svg',
-                            badge: 'https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6/svgs/solid/microphone.svg',
-                            vibrate: [200, 100, 200],
-                            tag: 'voice-brain-reminder',
-                            requireInteraction: false
-                        });
-                        
-                        notification.onclick = () => {
-                            window.focus();
-                            notification.close();
-                        };
-                        
-                        console.log('✅ Powiadomienie wysłane:', title);
-                    } catch (e) {
-                        console.error('❌ Błąd tworzenia powiadomienia:', e);
-                        // Fallback - alert wizualny w aplikacji
-                        this.showInAppNotification(title, body);
-                        if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
-                    }
-                },
-
-                showInAppNotification(title, body) {
-                    this.inAppNotification = { title, body };
-                    
-                    if (this.inAppNotificationTimeout) {
-                        clearTimeout(this.inAppNotificationTimeout);
-                    }
-                    
-                    this.inAppNotificationTimeout = setTimeout(() => {
-                        this.inAppNotification = null;
-                    }, 5000);
-                },
-
-                startReminderCheck() {
-                    console.log('⏰ Uruchamiam sprawdzanie przypomnień co 10 sekund');
-                    
-                    // Sprawdź natychmiast przy starcie
-                    this.checkReminders();
-                    
-                    // Potem sprawdzaj co 10 sekund
-                    this.reminderCheckInterval = setInterval(() => {
-                        this.checkReminders();
-                    }, 10000); // 10 sekund
-                },
-
-                async checkReminders() {
-                    const now = new Date();
-                    console.log(`🔍 Sprawdzam przypomnienia o ${now.toLocaleTimeString()}`);
-                    
-                    const reminders = this.notes.filter(note => {
-                        if (!note.hasReminder || note.reminderCompleted) return false;
-                        
-                        const reminderDate = new Date(note.reminderDate);
-                        const isPast = reminderDate <= now;
-                        
-                        if (isPast) {
-                            console.log('⏰ PRZYPOMNIENIE!', note.title, 'na', reminderDate);
-                        }
-                        
-                        return isPast;
-                    });
-
-                    console.log(`📋 Znaleziono ${reminders.length} przypomnień do wykonania`);
-
-                    for (const reminder of reminders) {
-                        console.log('🔔 Wykonuję przypomnienie:', reminder.title);
-                        
-                        // DŹWIĘK DZWONKA - wywołujemy metodę this.playReminderSound()
-                        this.playReminderSound();
-                        
-                        // Pokaż powiadomienie
-                        this.showNotification('⏰ Przypomnienie!', reminder.title);
-                        
-                        // Oznacz jako wykonane
-                        await db.notes.update(reminder.id, { reminderCompleted: true });
-                        console.log('✅ Przypomnienie oznaczone jako wykonane');
-                    }
-
-                    if (reminders.length > 0) {
-                        await this.loadNotes();
-                    }
-                },
-
-                async requestWakeLock() {
-                    if ('wakeLock' in navigator) {
-                        try {
-                            this.wakeLock = await navigator.wakeLock.request('screen');
-                            console.log('Wake Lock aktywny');
-                            this.wakeLock.addEventListener('release', () => {
-                                console.log('Wake Lock zwolniony');
-                                this.wakeLock = null;
-                            });
-                        } catch (err) {
-                            console.error(`Błąd Wake Lock: ${err.name}, ${err.message}`);
-                        }
-                    }
-                },
-
-                releaseWakeLock() {
-                    if (this.wakeLock !== null) {
-                        this.wakeLock.release()
-                            .then(() => { this.wakeLock = null; });
-                    }
-                },
-
-                setupSpeechRecognition() {
-                    this.SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-                    if (!this.SpeechRecognition) {
-                        this.errorMsg = 'Twoja przeglądarka nie obsługuje rozpoznawania mowy.';
-                    }
-                },
-
-                startRecordingLoop() {
-                    if (!this.SpeechRecognition) return;
-
-                    this.recognition = new this.SpeechRecognition();
-                    this.recognition.continuous = true;
-                    this.recognition.interimResults = true;
-                    this.recognition.lang = 'pl-PL';
-
-                    this.recognition.onstart = () => {
-                        this.isRecording = true;
-                        this.currentSessionFinal = ''; 
-                        this.detectedReminder = false;
-                        console.log('Nagrywanie rozpoczęte');
-                        playBeep('start');
-                    };
-
-                    this.recognition.onresult = (event) => {
-                        const results = event.results;
-                        const lastResult = results[results.length - 1];
-                        const transcript = lastResult[0].transcript;
-
-                        if (lastResult.isFinal) {
-                            this.currentSessionFinal = transcript;
-                            this.currentTranscript = transcript;
-                            
-                            const hasReminder = this.parseReminderFromText(transcript).hasReminder;
-                            if (hasReminder) {
-                                this.detectedReminder = true;
-                            }
-                        } else {
-                            this.currentTranscript = transcript;
-                        }
-                    };
-
-                    this.recognition.onerror = (event) => {
-                        console.error('Błąd Speech API:', event.error);
-                        if (event.error === 'no-speech') return; 
-                        if (event.error === 'network') {
-                        } else {
-                             this.isRecording = false;
-                             this.manualStop = true;
-                        }
-                    };
-
-                    this.recognition.onend = () => {
-                        console.log('Nagrywanie zakończone (event)');
-                        
-                        const newFinal = this.currentSessionFinal.trim();
-                        const bufferEnd = this.sessionTranscriptBuffer.trim().slice(-newFinal.length);
-                        
-                        if (newFinal && newFinal !== bufferEnd) {
-                            const cleanedNew = this.cleanText(newFinal);
-                            if (cleanedNew) {
-                                this.sessionTranscriptBuffer += (this.sessionTranscriptBuffer ? ' ' : '') + cleanedNew + ' ';
-                            }
-                        }
-                        
-                        this.currentSessionFinal = '';
-                        this.currentTranscript = '';
-
-                        if (!this.manualStop && this.isRecording) {
-                            console.log('Auto-restart nagrywania...');
-                            setTimeout(() => {
-                                if(!this.manualStop) this.startRecordingLoop();
-                            }, 100);
-                        } else {
-                            this.isRecording = false;
-                            this.detectedReminder = false;
-                            playBeep('stop');
-                            this.releaseWakeLock();
-                            
-                            const finalToSave = this.sessionTranscriptBuffer.trim();
-                            if (finalToSave) {
-                                this.saveNote(finalToSave);
-                            }
-                            this.sessionTranscriptBuffer = '';
-                        }
-                    };
-
-                    try {
-                        this.recognition.start();
-                    } catch (e) {
-                        console.error('Start error:', e);
-                    }
-                },
-
-                cleanText(text) {
-                    if (!text) return '';
-                    let clean = text.replace(/\s+/g, ' ').trim();
-                    clean = clean.replace(/(\b\w{3,}\b)( \1\b)+/gi, '$1');
-                    return clean;
-                },
-
-                toggleRecording() {
-                    if (!this.SpeechRecognition) return;
-
-                    if (this.isRecording) {
-                        this.manualStop = true; 
-                        if (this.recognition) this.recognition.stop();
-                        this.isRecording = false;
-                    } else {
-                        this.manualStop = false;
-                        this.sessionTranscriptBuffer = ''; 
-                        this.currentSessionFinal = '';
-                        this.currentTranscript = '';
-                        this.detectedReminder = false;
-                        this.requestWakeLock();
-                        this.startRecordingLoop();
-                    }
-                },
-
-                formatTime(dateObj) {
-                    if (!dateObj) return '';
-                    return new Date(dateObj).toLocaleTimeString('pl-PL', { 
-                        hour: '2-digit', minute: '2-digit' 
-                    });
-                },
-
-                formatReminderTime(dateObj) {
-                    if (!dateObj) return '';
-                    const date = new Date(dateObj);
-                    const now = new Date();
-                    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-                    const tomorrow = new Date(today);
-                    tomorrow.setDate(tomorrow.getDate() + 1);
-                    const reminderDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-
-                    let dayStr = '';
-                    if (reminderDay.getTime() === today.getTime()) {
-                        dayStr = 'Dzisiaj';
-                    } else if (reminderDay.getTime() === tomorrow.getTime()) {
-                        dayStr = 'Jutro';
-                    } else {
-                        dayStr = date.toLocaleDateString('pl-PL', { day: 'numeric', month: 'short' });
-                    }
-
-                    const timeStr = date.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
-                    return `${dayStr} o ${timeStr}`;
-                },
-
-                formatReminderBadge(dateObj) {
-                    if (!dateObj) return '';
-                    const date = new Date(dateObj);
-                    const now = new Date();
-                    const diffMs = date - now;
-                    const diffMins = Math.floor(diffMs / 60000);
-                    const diffHours = Math.floor(diffMs / 3600000);
-                    const diffDays = Math.floor(diffMs / 86400000);
-
-                    if (diffMins < 60) {
-                        return `${diffMins}m`;
-                    } else if (diffHours < 24) {
-                        return `${diffHours}h`;
-                    } else {
-                        return `${diffDays}d`;
-                    }
-                }
-            }));
-        });
-    </script>
 </body>
 </html>
